@@ -1,0 +1,22 @@
+# UI Framework
+dearpygui==1.11.1
+
+# Audio Processing
+sounddevice==0.4.6
+numpy==1.26.4
+scipy==1.12.0
+numba==0.59.0
+
+# Serialization
+msgpack==1.0.7
+
+# Testing
+pytest==8.0.0
+pytest-cov==4.1.0
+
+# MIDI (future)
+# python-rtmidi==1.5.8
+
+# Development
+black==24.1.1
+pylint==3.0.3
