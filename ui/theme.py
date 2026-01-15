@@ -184,3 +184,112 @@ def create_disabled_button_theme() -> str:
             dpg.add_theme_color(dpg.mvThemeCol_Text, VSCodeDark.TEXT_DISABLED)
 
     return disabled_theme
+
+
+def apply_ui_scale(scale: float = 1.0) -> str:
+    """
+    Apply UI scaling to fonts and spacing.
+
+    This function scales both the font size and UI spacing variables.
+    Note: Using set_global_font_scale() with the default font may cause blurriness.
+    For production, consider loading custom .ttf fonts at multiple sizes.
+
+    Args:
+        scale: Scale factor (0.5 - 2.0, default 1.0)
+
+    Returns:
+        Theme tag for the scaled theme
+    """
+    # Clamp scale to reasonable range
+    scale = max(0.5, min(2.0, scale))
+
+    # Apply global font scaling
+    dpg.set_global_font_scale(scale)
+
+    # Create scaled theme with adjusted spacing
+    with dpg.theme() as scaled_theme:
+        with dpg.theme_component(dpg.mvAll):
+            # Window/frame colors (same as base theme)
+            dpg.add_theme_color(dpg.mvThemeCol_WindowBg, VSCodeDark.BG_EDITOR)
+            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, VSCodeDark.BG_PANEL)
+            dpg.add_theme_color(dpg.mvThemeCol_PopupBg, VSCodeDark.BG_PANEL)
+            dpg.add_theme_color(dpg.mvThemeCol_Border, VSCodeDark.BORDER)
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, VSCodeDark.BG_INPUT)
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, VSCodeDark.BG_HOVER)
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, VSCodeDark.BORDER_ACTIVE)
+
+            # Text colors
+            dpg.add_theme_color(dpg.mvThemeCol_Text, VSCodeDark.TEXT_PRIMARY)
+            dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, VSCodeDark.TEXT_DISABLED)
+
+            # Button colors
+            dpg.add_theme_color(dpg.mvThemeCol_Button, VSCodeDark.BUTTON_NORMAL)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, VSCodeDark.BUTTON_HOVER)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, VSCodeDark.BUTTON_ACTIVE)
+
+            # Header colors
+            dpg.add_theme_color(dpg.mvThemeCol_Header, VSCodeDark.BG_HOVER)
+            dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, VSCodeDark.SELECTION_HOVER)
+            dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, VSCodeDark.SELECTION)
+
+            # Tab colors
+            dpg.add_theme_color(dpg.mvThemeCol_Tab, VSCodeDark.BG_SIDEBAR)
+            dpg.add_theme_color(dpg.mvThemeCol_TabHovered, VSCodeDark.BG_HOVER)
+            dpg.add_theme_color(dpg.mvThemeCol_TabActive, VSCodeDark.BG_PANEL)
+
+            # Slider colors
+            dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, VSCodeDark.SLIDER_GRAB)
+            dpg.add_theme_color(dpg.mvThemeCol_SliderGrabActive, VSCodeDark.SLIDER_GRAB_ACTIVE)
+
+            # Scaled spacing (multiply base spacing by scale factor)
+            dpg.add_theme_style(
+                dpg.mvStyleVar_FramePadding,
+                int(VSCodeDark.FRAME_PADDING[0] * scale),
+                int(VSCodeDark.FRAME_PADDING[1] * scale),
+                category=dpg.mvThemeCat_Core
+            )
+            dpg.add_theme_style(
+                dpg.mvStyleVar_ItemSpacing,
+                int(VSCodeDark.ITEM_SPACING[0] * scale),
+                int(VSCodeDark.ITEM_SPACING[1] * scale),
+                category=dpg.mvThemeCat_Core
+            )
+            dpg.add_theme_style(
+                dpg.mvStyleVar_WindowPadding,
+                int(VSCodeDark.WINDOW_PADDING[0] * scale),
+                int(VSCodeDark.WINDOW_PADDING[1] * scale),
+                category=dpg.mvThemeCat_Core
+            )
+            dpg.add_theme_style(
+                dpg.mvStyleVar_ItemInnerSpacing,
+                int(4 * scale),
+                int(4 * scale),
+                category=dpg.mvThemeCat_Core
+            )
+            dpg.add_theme_style(
+                dpg.mvStyleVar_ScrollbarSize,
+                int(14 * scale),
+                category=dpg.mvThemeCat_Core
+            )
+            dpg.add_theme_style(
+                dpg.mvStyleVar_FrameRounding,
+                int(3 * scale),
+                category=dpg.mvThemeCat_Core
+            )
+            dpg.add_theme_style(
+                dpg.mvStyleVar_GrabRounding,
+                int(3 * scale),
+                category=dpg.mvThemeCat_Core
+            )
+
+        # Disabled button styling
+        with dpg.theme_component(dpg.mvButton, enabled_state=False):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, VSCodeDark.TEXT_DISABLED)
+
+    # Apply the scaled theme
+    dpg.bind_theme(scaled_theme)
+
+    return scaled_theme
