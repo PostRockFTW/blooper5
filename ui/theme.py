@@ -25,7 +25,7 @@ class VSCodeDark:
     # Text colors
     TEXT_PRIMARY = (212, 212, 212, 255)    # #D4D4D4 - Primary text
     TEXT_SECONDARY = (150, 150, 150, 255)  # #969696 - Secondary text
-    TEXT_DISABLED = (90, 90, 90, 255)      # #5A5A5A - Disabled text
+    TEXT_DISABLED = (45, 45, 45, 255)      # #2D2D2D - Disabled text (very low contrast)
 
     # Accent colors
     ACCENT_BLUE = (0, 122, 204, 255)       # #007ACC - Primary accent (buttons, links)
@@ -50,6 +50,7 @@ class VSCodeDark:
     BUTTON_NORMAL = (60, 60, 60, 255)      # Normal button
     BUTTON_HOVER = (70, 70, 70, 255)       # Hovered button
     BUTTON_ACTIVE = (80, 80, 80, 255)      # Pressed button
+    BUTTON_DISABLED = (25, 25, 25, 255)    # Disabled button (much darker, nearly black)
 
     BUTTON_ACCENT_NORMAL = ACCENT_BLUE
     BUTTON_ACCENT_HOVER = ACCENT_BLUE_HOVER
@@ -85,6 +86,13 @@ def apply_vscode_theme() -> None:
             dpg.add_theme_color(dpg.mvThemeCol_Button, VSCodeDark.BUTTON_NORMAL)
             dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, VSCodeDark.BUTTON_HOVER)
             dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, VSCodeDark.BUTTON_ACTIVE)
+
+        # Disabled button styling (separate component)
+        with dpg.theme_component(dpg.mvButton, enabled_state=False):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, VSCodeDark.TEXT_DISABLED)
 
             # Header/collapsing header colors
             dpg.add_theme_color(dpg.mvThemeCol_Header, VSCodeDark.BG_HOVER)
@@ -159,3 +167,20 @@ def create_error_button_theme() -> str:
             dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255, 255))
 
     return error_theme
+
+
+def create_disabled_button_theme() -> str:
+    """
+    Create disabled button theme (grayed out, non-interactive appearance).
+
+    Returns:
+        Theme tag that can be bound to disabled buttons
+    """
+    with dpg.theme() as disabled_theme:
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, VSCodeDark.BUTTON_DISABLED)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, VSCodeDark.TEXT_DISABLED)
+
+    return disabled_theme

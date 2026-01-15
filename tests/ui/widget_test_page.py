@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 import dearpygui.dearpygui as dpg
-from ui.theme import apply_vscode_theme, create_accent_button_theme, create_success_button_theme, create_error_button_theme
+from ui.theme import apply_vscode_theme, create_accent_button_theme, create_success_button_theme, create_error_button_theme, create_disabled_button_theme
 
 
 def create_widget_showcase():
@@ -33,7 +33,8 @@ def create_widget_showcase():
             dpg.add_text("Standard Buttons:")
             with dpg.group(horizontal=True):
                 dpg.add_button(label="Normal Button", callback=lambda: print("Normal clicked"))
-                dpg.add_button(label="Disabled", enabled=False)
+                disabled_btn = dpg.add_button(label="Disabled (Locked Feature)", enabled=False)
+                dpg.bind_item_theme(disabled_btn, create_disabled_button_theme())
                 dpg.add_button(label="Small", small=True, callback=lambda: print("Small clicked"))
 
             dpg.add_spacer(height=10)
