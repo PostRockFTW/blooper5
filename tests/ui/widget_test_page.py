@@ -153,10 +153,27 @@ def create_widget_showcase():
         dpg.add_spacer(height=5)
 
         # ===== SECTION 8: COLOR PICKER =====
-        with dpg.collapsing_header(label="Color Picker", default_open=False):
-            dpg.add_text("Color Picker (for track colors):")
-            dpg.add_color_edit(default_value=(0, 122, 204, 255),
-                              callback=lambda s, v: print(f"Color: {v}"))
+        with dpg.collapsing_header(label="Color Picker", default_open=True):
+            dpg.add_text("Color Picker with Palette (for track colors):")
+
+            # Full color picker with visual palette selector and numeric inputs
+            dpg.add_color_picker(default_value=(0, 122, 204, 255),
+                                label="Track Color",
+                                no_side_preview=False,
+                                alpha_bar=True,
+                                width=250,
+                                callback=lambda s, v: print(f"Color RGBA: {v}"))
+
+            dpg.add_spacer(height=10)
+            dpg.add_text("Compact Color Editor with Inputs:")
+
+            # Compact version with numeric sliders
+            dpg.add_color_edit(default_value=(220, 80, 80, 255),
+                              label="Error Color",
+                              no_picker=False,
+                              alpha_bar=True,
+                              input_mode=dpg.mvColorEdit_input_rgb,
+                              callback=lambda s, v: print(f"Error Color: {v}"))
 
         dpg.add_spacer(height=5)
 
