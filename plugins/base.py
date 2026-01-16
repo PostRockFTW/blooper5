@@ -1,254 +1,341 @@
 """
-Base classes for all plugins.
+Base classes for all audio plugins.
 
-Plugins are:
-- Discovered automatically via entry points
-- Validated via metadata schema
-- Sandboxed for safety
+Blooper5 Plugin System:
+- Unified AudioProcessor interface for sources and effects
+- Declarative parameter metadata (ParameterSpec)
+- Auto-generated UI from metadata
+- Pure audio processing (no UI code in plugins)
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List
+from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, Any, List, Optional
 import numpy as np
 
 
-class PluginMetadata:
+class ParameterType(Enum):
+    """Types of plugin parameters."""
+    FLOAT = "float"
+    INT = "int"
+    BOOL = "bool"
+    ENUM = "enum"
+
+
+class PluginCategory(Enum):
+    """Plugin categories."""
+    SOURCE = "source"  # Synthesizers, drum machines (generate audio)
+    EFFECT = "effect"  # EQ, reverb, delay (process audio)
+
+
+@dataclass
+class ParameterSpec:
     """
-    Plugin metadata (name, version, author, etc.).
+    Declarative parameter specification.
+
+    UI is auto-generated from this metadata.
 
     Attributes:
-        name: Plugin name
-        version: Plugin version (semantic versioning)
-        author: Plugin author
-        category: "source" or "effect"
-        description: Plugin description
-        parameters: List of parameter definitions
-    """
-
-    def __init__(self, metadata_dict: Dict[str, Any]):
-        """
-        Initialize from metadata dictionary.
-
-        Args:
-            metadata_dict: Metadata dictionary from plugin
-
-        Raises:
-            ValueError: If metadata is invalid
-        """
-        self.name = metadata_dict.get("name", "")
-        self.version = metadata_dict.get("version", "1.0.0")
-        self.author = metadata_dict.get("author", "Unknown")
-        self.category = metadata_dict.get("category", "")
-        self.description = metadata_dict.get("description", "")
-
-        # Parse parameter definitions
-        params_data = metadata_dict.get("parameters", [])
-        self.parameters = [ParameterDefinition(p) for p in params_data]
-
-        # Validate on construction
-        self.validate()
-
-    def validate(self) -> bool:
-        """
-        Validate metadata schema.
-
-        Returns:
-            True if valid
-
-        Raises:
-            ValueError: If validation fails
-        """
-        if not self.name:
-            raise ValueError("Plugin name is required")
-
-        if self.category not in ["source", "effect"]:
-            raise ValueError(f"Invalid category: {self.category}. Must be 'source' or 'effect'")
-
-        # Validate version format (simple check)
-        parts = self.version.split(".")
-        if len(parts) != 3 or not all(p.isdigit() for p in parts):
-            raise ValueError(f"Invalid version format: {self.version}. Expected semantic versioning (e.g., 1.0.0)")
-
-        return True
-
-
-class ParameterDefinition:
-    """
-    Definition of a plugin parameter.
-
-    Attributes:
-        name: Parameter name
-        type: Parameter type ("float", "int", "bool", "enum")
-        min_value: Minimum value (for numeric types)
-        max_value: Maximum value (for numeric types)
-        default_value: Default value
+        name: Internal parameter name (snake_case)
+        type: Parameter data type
+        default: Default value
+        min_val: Minimum value (for numeric types)
+        max_val: Maximum value (for numeric types)
+        display_name: UI label
+        description: Tooltip text
+        enum_values: List of choices (for ENUM type)
         unit: Display unit (e.g., "Hz", "dB", "%")
-        enum_values: List of values for enum type
+        logarithmic: Use logarithmic scale for slider (for FLOAT)
     """
+    name: str
+    type: ParameterType
+    default: Any
+    min_val: Optional[float] = None
+    max_val: Optional[float] = None
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    enum_values: Optional[List[str]] = None
+    unit: Optional[str] = None
+    logarithmic: bool = False
 
-    def __init__(self, param_dict: Dict[str, Any]):
-        """
-        Initialize from parameter dictionary.
-
-        Args:
-            param_dict: Parameter definition dictionary
-        """
-        self.name = param_dict.get("name", "")
-        self.type = param_dict.get("type", "float")
-        self.min_value = param_dict.get("min_value", 0.0)
-        self.max_value = param_dict.get("max_value", 1.0)
-        self.default_value = param_dict.get("default_value", 0.5)
-        self.unit = param_dict.get("unit", "")
-        self.enum_values = param_dict.get("enum_values", [])
-
-        # Validate parameter definition
-        self._validate()
-
-    def _validate(self):
-        """Validate parameter definition."""
+    def __post_init__(self):
+        """Validate parameter specification."""
         if not self.name:
             raise ValueError("Parameter name is required")
 
-        valid_types = ["float", "int", "bool", "enum"]
-        if self.type not in valid_types:
-            raise ValueError(f"Invalid parameter type: {self.type}. Must be one of {valid_types}")
+        if self.display_name is None:
+            # Auto-generate display name from snake_case
+            self.display_name = self.name.replace('_', ' ').title()
 
-        if self.type == "enum" and not self.enum_values:
-            raise ValueError(f"Parameter {self.name} is enum type but has no enum_values")
+        # Type-specific validation
+        if self.type == ParameterType.ENUM:
+            if not self.enum_values:
+                raise ValueError(f"Parameter {self.name}: ENUM type requires enum_values")
+            if self.default not in self.enum_values:
+                raise ValueError(f"Parameter {self.name}: default must be in enum_values")
 
-        if self.type in ["float", "int"]:
-            if self.min_value >= self.max_value:
-                raise ValueError(f"Parameter {self.name}: min_value must be less than max_value")
+        if self.type in (ParameterType.FLOAT, ParameterType.INT):
+            if self.min_val is None or self.max_val is None:
+                raise ValueError(f"Parameter {self.name}: numeric types require min_val and max_val")
+            if self.min_val >= self.max_val:
+                raise ValueError(f"Parameter {self.name}: min_val must be < max_val")
+            if not (self.min_val <= self.default <= self.max_val):
+                raise ValueError(f"Parameter {self.name}: default must be within min/max range")
+
+
+@dataclass
+class PluginMetadata:
+    """
+    Plugin identity and parameter definitions.
+
+    Attributes:
+        id: Unique plugin ID (UPPER_SNAKE_CASE)
+        name: Display name
+        category: SOURCE or EFFECT
+        version: Semantic version string
+        author: Plugin author
+        description: Brief description
+        parameters: List of parameter specifications
+    """
+    id: str
+    name: str
+    category: PluginCategory
+    version: str
+    author: str
+    description: str
+    parameters: List[ParameterSpec]
+
+    def __post_init__(self):
+        """Validate metadata."""
+        if not self.id:
+            raise ValueError("Plugin ID is required")
+        if not self.id.isupper():
+            raise ValueError(f"Plugin ID must be UPPER_CASE: {self.id}")
+        if not self.name:
+            raise ValueError("Plugin name is required")
+
+        # Validate version format (simple semantic versioning check)
+        parts = self.version.split(".")
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            raise ValueError(f"Invalid version format: {self.version}. Expected X.Y.Z")
+
+        # Validate no duplicate parameter names
+        param_names = [p.name for p in self.parameters]
+        if len(param_names) != len(set(param_names)):
+            raise ValueError("Duplicate parameter names detected")
+
+
+@dataclass
+class ProcessContext:
+    """
+    Audio processing context passed to plugins.
+
+    Attributes:
+        sample_rate: Sample rate in Hz (typically 44100)
+        bpm: Current tempo in beats per minute
+        tpqn: Ticks per quarter note (typically 480)
+        current_tick: Current playback position in ticks
+    """
+    sample_rate: int
+    bpm: float
+    tpqn: int
+    current_tick: int = 0
 
 
 class AudioProcessor(ABC):
-    """Base class for all audio processors (sources and effects)."""
+    """
+    Base class for all audio plugins (sources and effects).
+
+    Plugins must implement:
+    1. get_metadata() - Define plugin identity and parameters
+    2. process() - Core audio processing function
+    3. get_tail_samples() - (Optional) For effects with decay/reverb
+    """
 
     @abstractmethod
     def get_metadata(self) -> PluginMetadata:
         """
         Get plugin metadata.
 
+        This defines the plugin's identity, parameters, and UI.
+        Called once during plugin discovery.
+
         Returns:
-            Plugin metadata
+            PluginMetadata with all parameter specifications
         """
         raise NotImplementedError()
 
     @abstractmethod
-    def process(self, input_buffer: np.ndarray, sample_rate: int) -> np.ndarray:
+    def process(self,
+                input_buffer: Optional[np.ndarray],
+                params: Dict[str, Any],
+                note: Optional['Note'],
+                context: ProcessContext) -> np.ndarray:
         """
         Process audio buffer.
 
+        PURE FUNCTION CONTRACT:
+        - Same inputs must produce same outputs (no hidden state)
+        - Thread-safe (may be called from audio process)
+        - Fast (runs in real-time audio callback)
+
         Args:
-            input_buffer: Input audio (stereo, shape=(frames, 2))
-            sample_rate: Audio sample rate
+            input_buffer: Input audio samples
+                - For SOURCE plugins: None (generate from scratch)
+                - For EFFECT plugins: Audio to process
+                - Shape: (num_samples,) - mono float32
+                - Range: -1.0 to 1.0
+
+            params: Current parameter values
+                - Keys match ParameterSpec.name from metadata
+                - Values are type-converted (float, int, str, bool)
+                - Example: {"gain_db": -6.0, "mix": 0.5}
+
+            note: MIDI note information
+                - For SOURCE plugins: Note to generate (pitch, velocity, duration)
+                - For EFFECT plugins: None (not used)
+                - Type: Note from core.models
+
+            context: Audio processing context
+                - sample_rate: Sample rate in Hz
+                - bpm: Current tempo
+                - tpqn: Ticks per quarter note
+                - current_tick: Playback position
 
         Returns:
-            Processed audio (same shape as input)
+            Output audio samples
+                - Shape: (num_samples,) - mono float32
+                - Range: -1.0 to 1.0 (values outside will be clipped)
+                - Length:
+                    * SOURCE: Based on note duration
+                    * EFFECT: Same as input_buffer length
+
+        Example (Source):
+            >>> def process(self, input_buffer, params, note, context):
+            ...     # Calculate note duration
+            ...     duration_secs = (note.duration / context.tpqn) * (60 / context.bpm)
+            ...     num_samples = int(duration_secs * context.sample_rate)
+            ...
+            ...     # Generate oscillator
+            ...     freq = 440 * (2 ** ((note.note - 69) / 12))
+            ...     t = np.arange(num_samples) / context.sample_rate
+            ...     output = np.sin(2 * np.pi * freq * t)
+            ...
+            ...     # Apply velocity
+            ...     output *= note.velocity / 127
+            ...     return output
+
+        Example (Effect):
+            >>> def process(self, input_buffer, params, note, context):
+            ...     # Process audio
+            ...     gain_db = params["gain_db"]
+            ...     gain_linear = 10 ** (gain_db / 20)
+            ...     output = input_buffer * gain_linear
+            ...
+            ...     # Apply dry/wet mix
+            ...     mix = params.get("mix", 1.0)
+            ...     output = input_buffer * (1 - mix) + output * mix
+            ...     return output
         """
         raise NotImplementedError()
 
-    @abstractmethod
-    def set_parameter(self, param_name: str, value: Any):
+    def get_tail_samples(self, params: Dict[str, Any], context: ProcessContext) -> int:
         """
-        Set plugin parameter.
+        Get number of tail samples for time-based effects.
+
+        Only needed for effects that produce audio after input ends:
+        - Reverb (decay tail)
+        - Delay (echo tail)
+        - Other time-based effects
 
         Args:
-            param_name: Parameter name
-            value: Parameter value
-
-        Raises:
-            ValueError: If parameter name or value is invalid
-        """
-        raise NotImplementedError()
-
-    @abstractmethod
-    def get_parameter(self, param_name: str) -> Any:
-        """
-        Get plugin parameter value.
-
-        Args:
-            param_name: Parameter name
+            params: Current parameter values
+            context: Audio processing context
 
         Returns:
-            Parameter value
+            Number of extra samples to allocate for tail
+            Default: 0 (no tail)
 
-        Raises:
-            ValueError: If parameter name is invalid
+        Example:
+            >>> def get_tail_samples(self, params, context):
+            ...     decay_time = params["decay_time"]  # seconds
+            ...     return int(decay_time * context.sample_rate)
         """
-        raise NotImplementedError()
-
-    def get_all_parameters(self) -> Dict[str, Any]:
-        """
-        Get all parameter values as dictionary.
-
-        Returns:
-            Dictionary of parameter name -> value
-        """
-        metadata = self.get_metadata()
-        return {param.name: self.get_parameter(param.name) for param in metadata.parameters}
+        return 0
 
     def reset(self):
-        """Reset plugin state (clear buffers, reset envelopes, etc.)."""
-        # Default implementation does nothing
+        """
+        Reset plugin state.
+
+        Called when:
+        - Playback stops
+        - User resets the plugin
+        - Switching tracks
+
+        Default implementation does nothing (stateless plugins).
+        Override if plugin has internal state (buffers, envelopes, etc.).
+        """
         pass
 
 
-class SourcePlugin(AudioProcessor):
-    """Base class for instrument/synth plugins."""
+# Helper functions for common DSP operations
 
-    @abstractmethod
-    def note_on(self, note: int, velocity: int):
-        """
-        Trigger note on.
+def midi_to_freq(midi_note: int) -> float:
+    """
+    Convert MIDI note number to frequency in Hz.
 
-        Args:
-            note: MIDI note number (0-127)
-            velocity: Note velocity (0-127)
-        """
-        raise NotImplementedError()
+    Args:
+        midi_note: MIDI note number (0-127)
 
-    @abstractmethod
-    def note_off(self, note: int):
-        """
-        Trigger note off.
+    Returns:
+        Frequency in Hz
 
-        Args:
-            note: MIDI note number (0-127)
-        """
-        raise NotImplementedError()
-
-    def all_notes_off(self):
-        """Release all currently playing notes."""
-        # Default implementation does nothing
-        pass
-
-    def get_active_notes(self) -> List[int]:
-        """
-        Get list of currently active note numbers.
-
-        Returns:
-            List of MIDI note numbers
-        """
-        return []
+    Example:
+        >>> midi_to_freq(69)  # A4
+        440.0
+        >>> midi_to_freq(60)  # C4
+        261.63
+    """
+    return 440.0 * (2 ** ((midi_note - 69) / 12))
 
 
-class EffectPlugin(AudioProcessor):
-    """Base class for audio effect plugins."""
+def db_to_linear(db: float) -> float:
+    """
+    Convert decibels to linear gain.
 
-    def set_wet_dry(self, wet: float):
-        """
-        Set wet/dry mix.
+    Args:
+        db: Gain in decibels
 
-        Args:
-            wet: Wet amount (0.0=fully dry, 1.0=fully wet)
-        """
-        self.set_parameter("mix", wet)
+    Returns:
+        Linear gain multiplier
 
-    def get_wet_dry(self) -> float:
-        """
-        Get wet/dry mix.
+    Example:
+        >>> db_to_linear(0.0)   # 0 dB = unity gain
+        1.0
+        >>> db_to_linear(-6.0)  # -6 dB ≈ half power
+        0.501
+        >>> db_to_linear(6.0)   # +6 dB ≈ double power
+        1.995
+    """
+    return 10 ** (db / 20)
 
-        Returns:
-            Wet amount (0.0-1.0)
-        """
-        return self.get_parameter("mix")
+
+def linear_to_db(linear: float) -> float:
+    """
+    Convert linear gain to decibels.
+
+    Args:
+        linear: Linear gain multiplier
+
+    Returns:
+        Gain in decibels
+
+    Example:
+        >>> linear_to_db(1.0)   # Unity gain
+        0.0
+        >>> linear_to_db(0.5)   # Half amplitude
+        -6.02
+        >>> linear_to_db(2.0)   # Double amplitude
+        6.02
+    """
+    return 20 * np.log10(max(linear, 1e-10))  # Avoid log(0)
