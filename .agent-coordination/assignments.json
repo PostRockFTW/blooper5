@@ -1,0 +1,70 @@
+{
+  "agents": {
+    "agent-core": {
+      "name": "Core Layer Migration",
+      "blooper5_files": [
+        "core/models.py",
+        "core/persistence.py",
+        "core/commands.py",
+        "core/constants.py"
+      ],
+      "blooper4_sources": [
+        "models.py",
+        "constants.py",
+        "utils/project_manager.py"
+      ],
+      "status_file": ".agent-coordination/status/agent-core.md"
+    },
+    "agent-audio": {
+      "name": "Audio Engine Migration",
+      "blooper5_files": [
+        "audio/engine.py",
+        "audio/mixer.py",
+        "audio/dsp.py",
+        "midi/handler.py"
+      ],
+      "blooper4_sources": [
+        "audio_engine/manager.py",
+        "audio_engine/bridge.py",
+        "audio_engine/midi_handler.py"
+      ],
+      "status_file": ".agent-coordination/status/agent-audio.md"
+    },
+    "agent-plugins": {
+      "name": "Plugin System Migration",
+      "blooper5_files": [
+        "plugins/base.py",
+        "plugins/registry.py",
+        "plugins/sources/dual_osc.py",
+        "plugins/sources/wavetable_synth.py",
+        "plugins/sources/noise_drum.py",
+        "plugins/sources/fm_drum.py",
+        "plugins/sources/square_cymbal.py",
+        "plugins/sources/periodic_noise.py",
+        "plugins/effects/eq.py",
+        "plugins/effects/reverb.py",
+        "plugins/effects/plate_reverb.py",
+        "plugins/effects/space_reverb.py",
+        "plugins/effects/delay.py"
+      ],
+      "blooper4_sources": [
+        "audio_engine/base_processor.py",
+        "audio_engine/plugin_factory.py",
+        "components/builder_plugins/dual_osc.py",
+        "components/builder_plugins/wavetable_synth.py",
+        "components/builder_plugins/noise_drum.py",
+        "components/builder_plugins/fm_drum.py",
+        "components/builder_plugins/square_cymbal.py",
+        "components/builder_plugins/periodic_noise.py",
+        "components/builder_plugins/eq.py",
+        "components/builder_plugins/reverb.py",
+        "components/builder_plugins/plate_reverb.py",
+        "components/builder_plugins/space_reverb.py",
+        "components/builder_plugins/delay.py"
+      ],
+      "status_file": ".agent-coordination/status/agent-plugins.md"
+    }
+  },
+  "shared_interfaces": ".agent-coordination/interfaces.md",
+  "progress_file": ".agent-coordination/progress.md"
+}

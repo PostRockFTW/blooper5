@@ -47,8 +47,8 @@ def main():
 
     # Main render loop
     while dpg.is_dearpygui_running():
-        # Capture keystrokes if in binding mode
-        settings_page._capture_keystroke()
+        # Update settings page (handles key capture if in binding mode)
+        settings_page.update()
 
         dpg.render_dearpygui_frame()
 

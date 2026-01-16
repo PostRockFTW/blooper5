@@ -1,5 +1,21 @@
 # Blooper5 Architecture
 
+## Recent Changes (2026-01-15)
+
+### Refactoring Completed:
+- ✅ Extracted KeyBindingCapture widget from SettingsPage (829 → 661 lines)
+- ✅ Created main.py entry point in root directory
+- ✅ Built complete placeholder structure for all layers
+- ✅ All imports verified, no regressions
+
+### Placeholder Structure Created:
+- 16 new files created (1,477 lines of scaffolding)
+- All classes have docstrings and type hints
+- All methods raise NotImplementedError with clear signatures
+- Ready for Blooper4 → Blooper5 migration
+
+---
+
 ## Design Principles
 
 1. **Separation of Concerns**: UI / Audio / State completely decoupled
@@ -13,8 +29,9 @@
 ### Core Layer (Pure Domain Logic)
 
 - `core/models.py` - Immutable dataclasses (Note, Track, Song, AppState)
-- `core/state.py` - Command pattern (AddNote, SetParameter, etc.)
-- `core/constants.py` - Audio constants only (SAMPLE_RATE, TPQN)
+- `core/commands.py` - Command pattern (AddNote, DeleteNote, etc.)
+- `core/persistence.py` - Project file I/O (.bloom5 format, MessagePack)
+- `core/constants.py` - Musical constants (MIDI note names, scales, BPM ranges)
 
 ### Audio Layer (Separate Process)
 

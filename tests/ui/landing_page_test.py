@@ -12,6 +12,7 @@ import dearpygui.dearpygui as dpg
 from ui.theme import apply_vscode_theme, apply_ui_scale
 from ui.views.LandingPage import LandingPage
 from ui.views.SettingsPage import SettingsPage
+from ui.views.DAWView import DAWView
 from pathlib import Path
 import json
 
@@ -19,28 +20,40 @@ import json
 def on_new_project():
     """Callback for New Project button."""
     print("=== NEW PROJECT CLICKED ===")
-    print("Would navigate to empty DAW interface")
-    # In real app: create new project state, navigate to main view
+    print("Navigating to DAW interface")
     landing_page.set_active_project(True)
     landing_page.hide()
-    print("Landing page hidden. Press hamburger (or close window) to return.")
+    daw_view.show()
+    dpg.set_primary_window(daw_view._window_tag, True)
+    print("DAW view shown. Press 'H' key to return to landing page.")
 
 
 def on_open_project(file_path: str):
     """Callback for Open Project button."""
     print(f"=== OPEN PROJECT CLICKED ===")
     print(f"Would load project from: {file_path}")
-    # In real app: load project from file, navigate to main view
     landing_page.set_active_project(True)
     landing_page.hide()
-    print("Landing page hidden. Press hamburger (or close window) to return.")
+    daw_view.show()
+    dpg.set_primary_window(daw_view._window_tag, True)
+    print("DAW view shown. Press 'H' key to return to landing page.")
 
 
 def on_return_to_project():
     """Callback for Return to Project button."""
     print("=== RETURN TO PROJECT CLICKED ===")
-    print("Would navigate back to active project")
+    print("Returning to active DAW project")
     landing_page.hide()
+    daw_view.show()
+    dpg.set_primary_window(daw_view._window_tag, True)
+
+
+def on_return_to_landing():
+    """Callback for returning to landing page from DAW."""
+    print("=== RETURN TO LANDING PAGE ===")
+    daw_view.hide()
+    landing_page.show()
+    dpg.set_primary_window(landing_page._window_tag, True)
 
 
 def on_settings():
@@ -68,7 +81,7 @@ def on_exit():
 
 def main():
     """Main entry point for landing page test."""
-    global landing_page, settings_page
+    global landing_page, settings_page, daw_view
 
     # Initialize DearPyGui
     dpg.create_context()
@@ -97,6 +110,15 @@ def main():
     settings_page.create()
     settings_page.hide()
 
+    # Create DAW view window and hide it initially
+    daw_view = DAWView(
+        on_return_to_landing=on_return_to_landing,
+        on_save_project=None,  # TODO: Implement save/load
+        on_load_project=None
+    )
+    daw_view.create()
+    daw_view.hide()
+
     # Setup viewport
     dpg.create_viewport(title="Blooper5",
                        width=900, height=700)
@@ -108,25 +130,32 @@ def main():
 
     # Main render loop
     while dpg.is_dearpygui_running():
-        # Capture keystrokes for key binding configuration
-        settings_page._capture_keystroke()
+        # Update settings page (handles key capture if in binding mode)
+        settings_page.update()
 
         dpg.render_dearpygui_frame()
 
-        # Simulate hamburger button: pressing 'H' key shows landing page
-        if dpg.is_key_pressed(dpg.mvKey_H):
-            landing_page.show()
-            print("(Hamburger pressed - showing landing page)")
+        # Simulate hamburger button: pressing 'H' key returns to landing page
+        if hasattr(dpg, "mvKey_H") and dpg.is_key_pressed(dpg.mvKey_H):
+            if dpg.is_item_visible(daw_view._window_tag):
+                # Return from DAW to landing page
+                on_return_to_landing()
+                print("(Hamburger pressed - returning to landing page)")
+            else:
+                # Show landing page (legacy behavior)
+                landing_page.show()
+                print("(Hamburger pressed - showing landing page)")
 
     # Cleanup
     dpg.destroy_context()
 
 
 if __name__ == "__main__":
-    print("=== Blooper5 Landing Page Test ===")
+    print("=== Blooper5 DAW Test (with Landing Page) ===")
     print("Controls:")
-    print("  - Click 'New Project' or 'Open Project' to simulate navigation")
-    print("  - Press 'H' key to simulate hamburger button (return to landing page)")
-    print("  - Click 'Return to Project' to hide landing page again")
+    print("  - Click 'New Project' or 'Open Project' to open DAW interface")
+    print("  - In DAW: Test mixer strips, transport controls, menus")
+    print("  - Press 'H' key to return to landing page from DAW")
+    print("  - Click 'Return to Project' to go back to DAW")
     print("-" * 50)
     main()

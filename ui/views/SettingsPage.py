@@ -6,6 +6,7 @@ import dearpygui.dearpygui as dpg
 from typing import Optional, Callable, Dict, Any
 from pathlib import Path
 import json
+from ui.widgets.KeyBindingCapture import KeyBindingCapture
 
 
 class SettingsPage:
@@ -28,10 +29,8 @@ class SettingsPage:
         self._settings_content_tag = "settings_content_group"
         self.category_buttons = {}  # Track category button tags for highlighting
 
-        # Keystroke capture state (for key bindings)
-        self.binding_in_progress = False
-        self.binding_target = None  # Which binding is being captured
-        self.captured_keys = []     # List of keys pressed
+        # Key binding capture widget
+        self.key_capture = KeyBindingCapture()
 
         # Default settings
         self.settings = self._load_settings()
@@ -522,14 +521,17 @@ class SettingsPage:
 
     def _start_key_capture(self, binding_key):
         """Start capturing keystrokes for a binding."""
-        self.binding_in_progress = True
-        self.binding_target = binding_key
-        self.captured_keys = []
-
         # Update button text
         dpg.set_item_label(f"bind_button_{binding_key}", "Press key...")
         dpg.set_value("binding_status_text",
                      "Press a key combination or ESC to cancel...")
+
+        # Start key capture widget
+        self.key_capture.start_capture(
+            target_name=binding_key,
+            on_captured=lambda binding_str: self._finalize_binding(binding_key, binding_str),
+            on_cancelled=lambda: self._cancel_key_capture(binding_key)
+        )
 
     def _clear_binding(self, binding_key):
         """Clear a key binding."""
@@ -537,100 +539,28 @@ class SettingsPage:
         self._save_settings()
         dpg.set_value(f"binding_display_{binding_key}", "None")
 
-    def _capture_keystroke(self):
+    def update(self):
         """
-        Called in main loop to capture keystrokes when binding_in_progress is True.
-        Detects key combinations including Ctrl, Shift, Alt, and scroll.
+        Called every frame to update key capture widget.
         """
-        if not self.binding_in_progress:
-            return
+        self.key_capture.update()
 
-        # Check for ESC to cancel
-        if dpg.is_key_pressed(dpg.mvKey_Escape):
-            self._cancel_key_capture()
-            return
 
-        # Build modifier prefix
-        modifiers = []
-        if dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl):
-            modifiers.append("Ctrl")
-        if dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift):
-            modifiers.append("Shift")
-        # Note: DearPyGui doesn't have separate LAlt/RAlt constants, only modifier state
-        if dpg.is_key_down(dpg.mvKey_ModAlt):
-            modifiers.append("Alt")
 
-        # Check for scroll wheel
-        scroll = dpg.get_mouse_wheel_delta()
-        if scroll != 0:
-            modifier_str = "+".join(modifiers) + "+" if modifiers else ""
-            scroll_str = "ScrollUp" if scroll > 0 else "ScrollDown"
-            binding_str = modifier_str + scroll_str
-            self._finalize_binding(binding_str)
-            return
-
-        # Check all printable keys and special keys
-        key_map = {
-            dpg.mvKey_Space: "Space",
-            dpg.mvKey_Return: "Enter",
-            dpg.mvKey_Tab: "Tab",
-            dpg.mvKey_Backspace: "Backspace",
-            dpg.mvKey_Delete: "Delete",
-            dpg.mvKey_Home: "Home",
-            dpg.mvKey_End: "End",
-            dpg.mvKey_PageUp: "PageUp",
-            dpg.mvKey_PageDown: "PageDown",
-            dpg.mvKey_UpArrow: "Up",
-            dpg.mvKey_DownArrow: "Down",
-            dpg.mvKey_LeftArrow: "Left",
-            dpg.mvKey_RightArrow: "Right",
-        }
-
-        # Add F1-F12
-        for i in range(1, 13):
-            key_map[getattr(dpg, f"mvKey_F{i}")] = f"F{i}"
-
-        # Add A-Z
-        for i in range(26):
-            key_map[dpg.mvKey_A + i] = chr(65 + i)
-
-        # Add 0-9
-        for i in range(10):
-            key_map[dpg.mvKey_0 + i] = str(i)
-
-        for key_code, key_name in key_map.items():
-            if dpg.is_key_pressed(key_code):
-                # Don't allow modifier-only bindings
-                if key_name in ["Ctrl", "Shift", "Alt"]:
-                    continue
-
-                modifier_str = "+".join(modifiers) + "+" if modifiers else ""
-                binding_str = modifier_str + key_name
-                self._finalize_binding(binding_str)
-                return
-
-    def _finalize_binding(self, binding_str):
+    def _finalize_binding(self, binding_key, binding_str):
         """Save the captured binding."""
-        self.settings["key_bindings"][self.binding_target] = binding_str
+        self.settings["key_bindings"][binding_key] = binding_str
         self._save_settings()
 
         # Update UI
-        dpg.set_value(f"binding_display_{self.binding_target}", binding_str)
-        dpg.set_item_label(f"bind_button_{self.binding_target}", "Click to bind...")
+        dpg.set_value(f"binding_display_{binding_key}", binding_str)
+        dpg.set_item_label(f"bind_button_{binding_key}", "Click to bind...")
         dpg.set_value("binding_status_text", f"Bound to: {binding_str}")
 
-        # Reset state
-        self.binding_in_progress = False
-        self.binding_target = None
-
-    def _cancel_key_capture(self):
+    def _cancel_key_capture(self, binding_key):
         """Cancel key capture mode."""
-        if self.binding_target:
-            dpg.set_item_label(f"bind_button_{self.binding_target}", "Click to bind...")
+        dpg.set_item_label(f"bind_button_{binding_key}", "Click to bind...")
         dpg.set_value("binding_status_text", "Binding cancelled")
-
-        self.binding_in_progress = False
-        self.binding_target = None
 
     def create(self) -> str:
         """
