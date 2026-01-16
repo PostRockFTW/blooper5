@@ -11,6 +11,7 @@ import dearpygui.dearpygui as dpg
 from typing import Optional, Callable
 import colorsys
 from ui.widgets.MixerStrip import MixerStrip
+from ui.views.PianoRoll import PianoRoll
 
 
 class DAWView:
@@ -125,8 +126,10 @@ class DAWView:
                                  border=False,
                                  autosize_x=True,
                                  height=-240):  # Reserve space for mixer at bottom
-                dpg.add_text("Piano Roll and Sound Designer will appear here")
-                dpg.add_text("(Docking implementation coming in Phase 5)")
+
+                # Create Piano Roll (full width for now, docking in Phase 5)
+                self.piano_roll = PianoRoll(width=1400, height=600)
+                self.piano_roll.create_window()
 
             dpg.add_spacer(height=5)
             dpg.add_separator()
