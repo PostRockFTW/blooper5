@@ -601,36 +601,28 @@ class PianoRoll:
         pass
 
     def create_dockable(self, tag: str = "piano_roll_window", parent_docking_space=None):
-        """Create dockable Piano Roll window with inline sidebar and toolbar."""
+        """Create dockable Piano Roll window (no theme controls - see Settings)."""
         with dpg.window(label="Piano Roll", tag=tag,
                        no_close=True,  # Prevent accidental close
                        no_collapse=True):  # Always show content
 
-            # Main horizontal layout: Canvas area + Theme sidebar
+            # Zoom controls at top
             with dpg.group(horizontal=True):
-                # LEFT: Canvas area (main Piano Roll)
-                with dpg.group():
-                    # Zoom controls at top
-                    with dpg.group(horizontal=True):
-                        dpg.add_button(label="Zoom In", callback=self.zoom_in, width=80)
-                        dpg.add_button(label="Zoom Out", callback=self.zoom_out, width=80)
-                        dpg.add_spacer(width=10)
-                        dpg.add_text("Left-click: Draw | Right-click: Select", color=(150, 150, 150))
+                dpg.add_button(label="Zoom In", callback=self.zoom_in, width=80)
+                dpg.add_button(label="Zoom Out", callback=self.zoom_out, width=80)
+                dpg.add_spacer(width=10)
+                dpg.add_text("Left-click: Draw | Right-click: Select", color=(150, 150, 150))
 
-                    dpg.add_spacer(height=5)
+            dpg.add_spacer(height=5)
 
-                    # Canvas for drawing notes
-                    self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
-                    self.drawlist_id = self.canvas_id
+            # Canvas for drawing notes
+            self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
+            self.drawlist_id = self.canvas_id
 
-                    dpg.add_spacer(height=5)
+            dpg.add_spacer(height=5)
 
-                    # Toolbar at bottom (INLINE)
-                    self._create_toolbar_inline()
-
-                # RIGHT: Theme customization sidebar (INLINE)
-                with dpg.child_window(width=300, border=True):
-                    self._create_color_sidebar_inline()
+            # Toolbar at bottom (INLINE)
+            self._create_toolbar_inline()
 
             # Mouse handlers for canvas
             with dpg.item_handler_registry() as handler:
