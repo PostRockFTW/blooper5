@@ -420,23 +420,32 @@ class PianoRoll:
             )
 
             dpg.add_separator()
-            dpg.add_text("Grid Line Colors:")
+            dpg.add_text("Vertical Grid Lines:")
             dpg.add_color_edit(
                 label="Grid Lines",
                 default_value=self.theme.grid_line_color + [255],
-                callback=lambda s, v: self._update_theme_color('grid_line_color', v[:3]),
+                callback=lambda s, v: self._update_theme_color('grid_line_color', v),
                 no_alpha=True
             )
             dpg.add_color_edit(
                 label="Triplet Lines",
                 default_value=self.theme.triplet_line_color + [255],
-                callback=lambda s, v: self._update_theme_color('triplet_line_color', v[:3]),
+                callback=lambda s, v: self._update_theme_color('triplet_line_color', v),
                 no_alpha=True
             )
             dpg.add_color_edit(
                 label="Measure Lines",
                 default_value=self.theme.measure_line_color + [255],
-                callback=lambda s, v: self._update_theme_color('measure_line_color', v[:3]),
+                callback=lambda s, v: self._update_theme_color('measure_line_color', v),
+                no_alpha=True
+            )
+
+            dpg.add_separator()
+            dpg.add_text("Horizontal Row Lines:")
+            dpg.add_color_edit(
+                label="Row Dividers",
+                default_value=self.theme.row_divider_color + [255],
+                callback=lambda s, v: self._update_theme_color('row_divider_color', v),
                 no_alpha=True
             )
 
@@ -445,7 +454,7 @@ class PianoRoll:
             dpg.add_color_edit(
                 label="Playhead",
                 default_value=self.theme.playhead_color + [255],
-                callback=lambda s, v: self._update_theme_color('playhead_color', v[:3]),
+                callback=lambda s, v: self._update_theme_color('playhead_color', v),
                 no_alpha=True
             )
 
@@ -454,7 +463,9 @@ class PianoRoll:
 
     def _update_theme_color(self, attr: str, color: List[int]):
         """Update theme color and redraw."""
-        setattr(self.theme, attr, color)
+        # Convert from RGBA to RGB (color pickers return 4 values)
+        rgb_color = list(color[:3])
+        setattr(self.theme, attr, rgb_color)
         self.draw()
 
     def _reset_theme(self):
