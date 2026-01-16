@@ -593,9 +593,6 @@ class PianoRoll:
             with dpg.item_handler_registry() as handler:
                 dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Left, callback=self._handle_canvas_click)
                 dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Right, callback=self._handle_canvas_right_click)
-                dpg.add_item_active_handler(callback=self._handle_drag_start)
-                dpg.add_item_drag_handler(callback=self._handle_drag)
-                dpg.add_item_deactivated_handler(callback=self._handle_drag_end)
 
             dpg.bind_item_handler_registry(self.canvas_id, handler)
 
