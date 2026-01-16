@@ -460,6 +460,10 @@ class PianoRoll:
             dpg.add_text("Color Customization", color=(255, 255, 100))
             dpg.add_separator()
 
+            # Debug display
+            self.debug_text = dpg.add_text("Last update: None", color=(200, 200, 200))
+            dpg.add_separator()
+
             # Background colors
             dpg.add_text("Background Colors:")
             dpg.add_color_edit(
@@ -519,9 +523,15 @@ class PianoRoll:
 
     def _update_theme_color(self, attr: str, color: List[int]):
         """Update theme color and redraw."""
-        # Convert from RGBA to RGB (color pickers return 4 values)
-        rgb_color = list(color[:3])
+        # DearPyGui color pickers return floats in 0.0-1.0 range
+        # Convert to integers in 0-255 range
+        rgb_color = [int(c * 255) for c in color[:3]]
         setattr(self.theme, attr, rgb_color)
+
+        # Update debug display
+        if hasattr(self, 'debug_text') and dpg.does_item_exist(self.debug_text):
+            dpg.set_value(self.debug_text, f"Last update: {attr} = {rgb_color}")
+
         self.draw()
 
     def _reset_theme(self):
