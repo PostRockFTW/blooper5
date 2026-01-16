@@ -463,73 +463,75 @@ class PianoRoll:
         self.zoom_x = max(self.zoom_x / 1.2, 0.01)  # Min: ~5px per quarter note
         self.draw()
 
+    def _create_color_sidebar_inline(self):
+        """Create inline color customization sidebar."""
+        dpg.add_text("Color Customization", color=(255, 255, 100))
+        dpg.add_separator()
+
+        # Debug display
+        self.debug_text = dpg.add_text("Last update: None", color=(200, 200, 200))
+        dpg.add_separator()
+
+        # Background colors
+        dpg.add_text("Background Colors:")
+        dpg.add_color_edit(
+            label="BG Color",
+            default_value=self.theme.bg_color + [255],
+            callback=lambda s, v: self._update_theme_color('bg_color', v[:3]),
+            no_alpha=True
+        )
+        dpg.add_color_edit(
+            label="Black Key BG",
+            default_value=self.theme.bg_color_black_key + [255],
+            callback=lambda s, v: self._update_theme_color('bg_color_black_key', v[:3]),
+            no_alpha=True
+        )
+
+        dpg.add_separator()
+        dpg.add_text("Vertical Grid Lines:")
+        dpg.add_color_edit(
+            label="Grid Lines",
+            default_value=self.theme.grid_line_color + [255],
+            callback=lambda s, v: self._update_theme_color('grid_line_color', v),
+            no_alpha=True
+        )
+        dpg.add_color_edit(
+            label="Triplet Lines",
+            default_value=self.theme.triplet_line_color + [255],
+            callback=lambda s, v: self._update_theme_color('triplet_line_color', v),
+            no_alpha=True
+        )
+        dpg.add_color_edit(
+            label="Measure Lines",
+            default_value=self.theme.measure_line_color + [255],
+            callback=lambda s, v: self._update_theme_color('measure_line_color', v),
+            no_alpha=True
+        )
+
+        dpg.add_separator()
+        dpg.add_text("Horizontal Row Lines:")
+        dpg.add_color_edit(
+            label="Row Dividers",
+            default_value=self.theme.row_divider_color + [255],
+            callback=lambda s, v: self._update_theme_color('row_divider_color', v),
+            no_alpha=True
+        )
+
+        dpg.add_separator()
+        dpg.add_text("Other:")
+        dpg.add_color_edit(
+            label="Playhead",
+            default_value=self.theme.playhead_color + [255],
+            callback=lambda s, v: self._update_theme_color('playhead_color', v),
+            no_alpha=True
+        )
+
+        dpg.add_separator()
+        dpg.add_button(label="Reset to Blooper4 Theme", callback=self._reset_theme)
+
     def _create_color_sidebar(self):
-        """Create color customization sidebar."""
-        with dpg.window(label="Theme Customizer", pos=(self.width + 30, 10),
-                       width=300, height=600, tag="theme_sidebar"):
-            dpg.add_text("Color Customization", color=(255, 255, 100))
-            dpg.add_separator()
-
-            # Debug display
-            self.debug_text = dpg.add_text("Last update: None", color=(200, 200, 200))
-            dpg.add_separator()
-
-            # Background colors
-            dpg.add_text("Background Colors:")
-            dpg.add_color_edit(
-                label="BG Color",
-                default_value=self.theme.bg_color + [255],
-                callback=lambda s, v: self._update_theme_color('bg_color', v[:3]),
-                no_alpha=True
-            )
-            dpg.add_color_edit(
-                label="Black Key BG",
-                default_value=self.theme.bg_color_black_key + [255],
-                callback=lambda s, v: self._update_theme_color('bg_color_black_key', v[:3]),
-                no_alpha=True
-            )
-
-            dpg.add_separator()
-            dpg.add_text("Vertical Grid Lines:")
-            dpg.add_color_edit(
-                label="Grid Lines",
-                default_value=self.theme.grid_line_color + [255],
-                callback=lambda s, v: self._update_theme_color('grid_line_color', v),
-                no_alpha=True
-            )
-            dpg.add_color_edit(
-                label="Triplet Lines",
-                default_value=self.theme.triplet_line_color + [255],
-                callback=lambda s, v: self._update_theme_color('triplet_line_color', v),
-                no_alpha=True
-            )
-            dpg.add_color_edit(
-                label="Measure Lines",
-                default_value=self.theme.measure_line_color + [255],
-                callback=lambda s, v: self._update_theme_color('measure_line_color', v),
-                no_alpha=True
-            )
-
-            dpg.add_separator()
-            dpg.add_text("Horizontal Row Lines:")
-            dpg.add_color_edit(
-                label="Row Dividers",
-                default_value=self.theme.row_divider_color + [255],
-                callback=lambda s, v: self._update_theme_color('row_divider_color', v),
-                no_alpha=True
-            )
-
-            dpg.add_separator()
-            dpg.add_text("Other:")
-            dpg.add_color_edit(
-                label="Playhead",
-                default_value=self.theme.playhead_color + [255],
-                callback=lambda s, v: self._update_theme_color('playhead_color', v),
-                no_alpha=True
-            )
-
-            dpg.add_separator()
-            dpg.add_button(label="Reset to Blooper4 Theme", callback=self._reset_theme)
+        """DEPRECATED: Use _create_color_sidebar_inline() instead."""
+        pass
 
     def _update_theme_color(self, attr: str, color: List[int]):
         """Update theme color and redraw."""
@@ -549,10 +551,9 @@ class PianoRoll:
         self.theme = PianoRollTheme()
         self.draw()
 
-    def _create_toolbar(self):
-        """Create movable toolbar with note controls."""
-        with dpg.window(label="Note Controls", pos=(10, self.height + 80),
-                       width=600, height=150, tag="note_toolbar"):
+    def _create_toolbar_inline(self):
+        """Create inline toolbar with note controls."""
+        with dpg.child_window(height=120, border=True):
             with dpg.group(horizontal=True):
                 # Tool selection
                 dpg.add_text("Tool:")
@@ -595,21 +596,43 @@ class PianoRoll:
                 dpg.add_spacer(width=10)
                 dpg.add_text("Auto (follows grid)", tag="note_length_display", color=(150, 255, 150))
 
-    def create_window(self, tag: str = "piano_roll_window"):
-        """Create the DearPyGui window."""
-        with dpg.window(label="Piano Roll (Redesigned)", tag=tag,
-                       width=self.width + 20, height=self.height + 60, pos=(10, 10)):
-            # Zoom controls
+    def _create_toolbar(self):
+        """DEPRECATED: Use _create_toolbar_inline() instead."""
+        pass
+
+    def create_dockable(self, tag: str = "piano_roll_window", parent_docking_space=None):
+        """Create dockable Piano Roll window with inline sidebar and toolbar."""
+        with dpg.window(label="Piano Roll", tag=tag,
+                       no_close=True,  # Prevent accidental close
+                       no_collapse=True):  # Always show content
+
+            # Main horizontal layout: Canvas area + Theme sidebar
             with dpg.group(horizontal=True):
-                dpg.add_button(label="Zoom In", callback=self.zoom_in)
-                dpg.add_button(label="Zoom Out", callback=self.zoom_out)
-                dpg.add_text("Left-click: Draw | Right-click: Select | Scroll: Zoom", color=(150, 150, 150))
+                # LEFT: Canvas area (main Piano Roll)
+                with dpg.group():
+                    # Zoom controls at top
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Zoom In", callback=self.zoom_in, width=80)
+                        dpg.add_button(label="Zoom Out", callback=self.zoom_out, width=80)
+                        dpg.add_spacer(width=10)
+                        dpg.add_text("Left-click: Draw | Right-click: Select", color=(150, 150, 150))
 
-            # Canvas
-            self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
-            self.drawlist_id = self.canvas_id
+                    dpg.add_spacer(height=5)
 
-            # Mouse handlers
+                    # Canvas for drawing notes
+                    self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
+                    self.drawlist_id = self.canvas_id
+
+                    dpg.add_spacer(height=5)
+
+                    # Toolbar at bottom (INLINE)
+                    self._create_toolbar_inline()
+
+                # RIGHT: Theme customization sidebar (INLINE)
+                with dpg.child_window(width=300, border=True):
+                    self._create_color_sidebar_inline()
+
+            # Mouse handlers for canvas
             with dpg.item_handler_registry() as handler:
                 dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Left, callback=self._handle_canvas_click)
                 dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Right, callback=self._handle_canvas_right_click)
@@ -618,12 +641,12 @@ class PianoRoll:
 
         self.window_id = tag
 
-        # Create sidebar and toolbar
-        self._create_color_sidebar()
-        self._create_toolbar()
-
         # Initial draw
         self.draw()
+
+        # Dock the window if parent docking space provided
+        if parent_docking_space:
+            dpg.configure_item(tag, docked=True, dock_space=parent_docking_space)
 
 
 def create_piano_roll_demo():

@@ -59,6 +59,7 @@ class DAWView:
 
         # Sub-widgets (will be initialized in create())
         self.piano_roll = None
+        self.piano_roll_window_id = "piano_roll_window"  # Track Piano Roll window for show/hide
         self.sound_designer = None
         self.mixer_strips = []  # 17 MixerStrip instances
 
@@ -120,16 +121,16 @@ class DAWView:
             dpg.add_spacer(height=5)
 
             # Center: Dockable Panels (Piano Roll + Sound Designer)
-            # TODO: Implement docking space in Phase 5
-            # Use child window to fill remaining space above mixer
+            # Docking space for Piano Roll, Sound Designer, Toolbars
             with dpg.child_window(tag=self._docking_space_tag,
                                  border=False,
                                  autosize_x=True,
-                                 height=-240):  # Reserve space for mixer at bottom
+                                 height=-240) as docking_space:  # Reserve space for mixer at bottom
 
-                # Create Piano Roll (full width for now, docking in Phase 5)
+                # Create Piano Roll as dockable window
                 self.piano_roll = PianoRoll(width=1400, height=600)
-                self.piano_roll.create_window()
+                self.piano_roll.create_dockable(tag=self.piano_roll_window_id,
+                                              parent_docking_space=docking_space)
 
             dpg.add_spacer(height=5)
             dpg.add_separator()
@@ -343,14 +344,22 @@ class DAWView:
     # Window Management
 
     def show(self):
-        """Show the DAW window."""
+        """Show the DAW window and all dockable panels."""
         if dpg.does_item_exist(self._window_tag):
             dpg.show_item(self._window_tag)
 
+        # Show Piano Roll dockable window
+        if dpg.does_item_exist(self.piano_roll_window_id):
+            dpg.show_item(self.piano_roll_window_id)
+
     def hide(self):
-        """Hide the DAW window."""
+        """Hide the DAW window and all dockable panels."""
         if dpg.does_item_exist(self._window_tag):
             dpg.hide_item(self._window_tag)
+
+        # Hide Piano Roll dockable window
+        if dpg.does_item_exist(self.piano_roll_window_id):
+            dpg.hide_item(self.piano_roll_window_id)
 
     def destroy(self):
         """Destroy the DAW window."""
