@@ -67,7 +67,7 @@ class PianoRoll:
         # Viewport/scrolling
         self.scroll_x = 0
         self.scroll_y = 60 * GRID_HEIGHT
-        self.zoom_x = 0.537
+        self.zoom_x = 0.03125  # Makes grid cells nearly square (12px tall, ~15px wide for quarter notes)
 
         # Tool state
         self.tool = "draw"  # "draw" or "select"
@@ -455,12 +455,12 @@ class PianoRoll:
 
     def zoom_in(self):
         """Zoom in horizontally."""
-        self.zoom_x = min(self.zoom_x * 1.2, 10.0)
+        self.zoom_x = min(self.zoom_x * 1.2, 0.5)  # Max: ~240px per quarter note
         self.draw()
 
     def zoom_out(self):
         """Zoom out horizontally."""
-        self.zoom_x = max(self.zoom_x / 1.2, 0.1)
+        self.zoom_x = max(self.zoom_x / 1.2, 0.01)  # Min: ~5px per quarter note
         self.draw()
 
     def _create_color_sidebar(self):
