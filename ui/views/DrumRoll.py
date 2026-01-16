@@ -322,6 +322,135 @@ class DrumRoll:
         """Zoom out horizontally."""
         self.zoom_x = max(self.zoom_x / 1.2, 0.1)
 
+    def snap_tick_to_grid(self, tick: float) -> float:
+        """Snap tick value to current grid quantization."""
+        if self.snap_to_grid:
+            return round(tick / self.quantize_value) * self.quantize_value
+        return tick
+
+    def _handle_canvas_click(self, sender, app_data):
+        """Handle left-click on canvas (create drum hit with pencil tool)."""
+        if self.tool != "pencil":
+            return
+
+        # Get mouse position from DearPyGui
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_pos = dpg.get_item_pos(self.canvas_id)
+
+        mouse_x = mouse_pos[0] - canvas_pos[0]
+        mouse_y = mouse_pos[1] - canvas_pos[1]
+
+        # Convert to pitch and tick
+        pitch = self.get_pitch_at(mouse_y)
+        tick = self.get_tick_at(mouse_x)
+        snapped_tick = self.snap_tick_to_grid(tick)
+
+        # Create new drum hit (short duration)
+        new_note = MockNote(
+            note=pitch,
+            start=snapped_tick / TPQN,
+            duration=0.05,  # Very short for drum hits
+            velocity=100,
+            selected=False
+        )
+        self.notes.append(new_note)
+        self.draw()
+
+    def _handle_canvas_right_click(self, sender, app_data):
+        """Handle right-click on canvas (select/deselect drum hit)."""
+        # Get mouse position from DearPyGui
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_pos = dpg.get_item_pos(self.canvas_id)
+
+        mouse_x = mouse_pos[0] - canvas_pos[0]
+        mouse_y = mouse_pos[1] - canvas_pos[1]
+
+        # Find note under cursor
+        pitch = self.get_pitch_at(mouse_y)
+        tick = self.get_tick_at(mouse_x)
+
+        # Check if we clicked on a drum hit (within small tolerance)
+        for note in self.notes:
+            note_tick = note.start * TPQN
+            if (note.note == pitch and
+                abs(tick - note_tick) < DRUM_NOTE_WIDTH / self.zoom_x):
+                note.selected = not note.selected
+                self.draw()
+                return
+
+    def _handle_drag_start(self, sender, app_data):
+        """Called when user starts dragging."""
+        # Get mouse position
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_pos = dpg.get_item_pos(self.canvas_id)
+        mouse_x = mouse_pos[0] - canvas_pos[0]
+        mouse_y = mouse_pos[1] - canvas_pos[1]
+
+        # Find note under cursor
+        pitch = self.get_pitch_at(mouse_y)
+        tick = self.get_tick_at(mouse_x)
+
+        for note in self.notes:
+            note_tick = note.start * TPQN
+            if (note.note == pitch and
+                abs(tick - note_tick) < DRUM_NOTE_WIDTH / self.zoom_x):
+                self.is_dragging = True
+                self.drag_start_pos = (tick, pitch)
+                self.current_note = note
+                note.selected = True
+                break
+
+    def _handle_drag(self, sender, app_data):
+        """Called while dragging (horizontal only for drum hits)."""
+        if not self.is_dragging or self.current_note is None:
+            return
+
+        # Get current mouse position
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_pos = dpg.get_item_pos(self.canvas_id)
+        mouse_x = mouse_pos[0] - canvas_pos[0]
+
+        # Update note position (horizontal only, no pitch change)
+        new_tick = self.get_tick_at(mouse_x)
+        snapped_tick = self.snap_tick_to_grid(new_tick)
+
+        # Update note position
+        self.current_note.start = snapped_tick / TPQN
+
+        # Redraw
+        self.draw()
+
+    def _handle_drag_end(self, sender, app_data):
+        """Called when drag ends."""
+        if self.is_dragging:
+            self.is_dragging = False
+            self.drag_start_pos = None
+            self.current_note = None
+            self.draw()
+
+    def _delete_selected_notes(self, sender=None, app_data=None):
+        """Delete all selected drum hits (Delete key)."""
+        self.notes = [n for n in self.notes if not n.selected]
+        self.draw()
+
+    def _deselect_all_notes(self, sender=None, app_data=None):
+        """Deselect all drum hits (Escape key)."""
+        for note in self.notes:
+            note.selected = False
+        self.draw()
+
+    def _toggle_playback(self, sender=None, app_data=None):
+        """Toggle playback (Spacebar)."""
+        self.is_playing = not self.is_playing
+        print(f"Playback: {'Playing' if self.is_playing else 'Stopped'}")
+
+    def _handle_key_a(self, sender=None, app_data=None):
+        """Handle A key press (Ctrl+A for select all)."""
+        if dpg.is_key_down(dpg.mvKey_Control):
+            for note in self.notes:
+                note.selected = True
+            self.draw()
+
     def create_window(self, tag: str = "drum_roll_window"):
         """Create the DearPyGui window."""
         with dpg.window(label="Drum Roll", tag=tag, width=self.width + 20, height=self.height + 100):
@@ -340,18 +469,47 @@ class DrumRoll:
             self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
             self.drawlist_id = self.canvas_id
 
-            with dpg.handler_registry():
-                dpg.add_mouse_wheel_handler(callback=self._handle_scroll)
+            # Mouse handlers
+            with dpg.item_handler_registry() as handler:
+                # Click handlers (for creating/selecting drum hits)
+                dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Left, callback=self._handle_canvas_click)
+                dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Right, callback=self._handle_canvas_right_click)
+
+                # Drag handlers (for moving drum hits)
+                dpg.add_item_active_handler(callback=self._handle_drag_start)
+                dpg.add_item_drag_handler(callback=self._handle_drag)
+                dpg.add_item_deactivated_handler(callback=self._handle_drag_end)
+
+                # Scroll handler (for horizontal scroll and zoom)
+                dpg.add_item_wheel_handler(callback=self._handle_scroll)
+
+            dpg.bind_item_handler_registry(self.canvas_id, handler)
+
+        # Keyboard handlers (window-level)
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(dpg.mvKey_Delete, callback=self._delete_selected_notes)
+            dpg.add_key_press_handler(dpg.mvKey_Escape, callback=self._deselect_all_notes)
+            dpg.add_key_press_handler(dpg.mvKey_Spacebar, callback=self._toggle_playback)
+            dpg.add_key_press_handler(dpg.mvKey_A, callback=self._handle_key_a)
 
         self.window_id = tag
         self.draw()
 
     def _handle_scroll(self, sender, app_data):
-        """Handle mouse wheel for zooming."""
-        if app_data > 0:
-            self.zoom_in()
+        """Handle mouse wheel for horizontal scroll or zoom."""
+        scroll_delta = app_data  # Positive = scroll up, negative = scroll down
+
+        # Horizontal scroll (or zoom if Ctrl held)
+        if dpg.is_key_down(dpg.mvKey_Control):
+            # Zoom
+            if scroll_delta > 0:
+                self.zoom_in()
+            else:
+                self.zoom_out()
         else:
-            self.zoom_out()
+            # Horizontal scroll
+            self.scroll_x -= scroll_delta * 50
+            self.scroll_x = max(0, self.scroll_x)
         self.draw()
 
     def update(self, current_tick: int):
