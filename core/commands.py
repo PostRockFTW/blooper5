@@ -7,8 +7,9 @@ All state modifications go through commands to enable:
 - Serialization for auto-save
 """
 from abc import ABC, abstractmethod
-from typing import Optional
-from core.models import AppState, Note
+from typing import Optional, List
+from dataclasses import replace
+from core.models import AppState, Note, Song
 
 
 class Command(ABC):
@@ -56,15 +57,49 @@ class AddNoteCommand(Command):
             track_index: Index of track (0-15)
             note: Note to add
         """
-        raise NotImplementedError("AddNoteCommand not yet implemented")
+        self.track_index = track_index
+        self.note = note
+        self._previous_song: Optional[Song] = None
 
     def execute(self, state: AppState) -> AppState:
         """Add note to track."""
-        raise NotImplementedError("execute not yet implemented")
+        song = state.get_current_song()
+        if song is None:
+            raise ValueError("No song loaded")
+
+        if not 0 <= self.track_index < len(song.tracks):
+            raise ValueError(f"Track index {self.track_index} out of range")
+
+        # Store previous state for undo
+        self._previous_song = song
+
+        # Get the track and add the note
+        old_track = song.tracks[self.track_index]
+        new_notes = old_track.notes + (self.note,)
+
+        # Create new track with added note
+        new_track = replace(old_track, notes=new_notes)
+
+        # Create new song with updated track
+        new_tracks = list(song.tracks)
+        new_tracks[self.track_index] = new_track
+        new_song = replace(song, tracks=tuple(new_tracks))
+
+        # Update state
+        state.set_current_song(new_song)
+        state.mark_dirty()
+
+        return state
 
     def undo(self, state: AppState) -> AppState:
         """Remove added note."""
-        raise NotImplementedError("undo not yet implemented")
+        if self._previous_song is None:
+            raise ValueError("Command has not been executed yet")
+
+        state.set_current_song(self._previous_song)
+        state.mark_dirty()
+
+        return state
 
     @property
     def description(self) -> str:
@@ -80,15 +115,56 @@ class DeleteNoteCommand(Command):
             track_index: Index of track (0-15)
             note_index: Index of note to delete
         """
-        raise NotImplementedError("DeleteNoteCommand not yet implemented")
+        self.track_index = track_index
+        self.note_index = note_index
+        self._previous_song: Optional[Song] = None
 
     def execute(self, state: AppState) -> AppState:
         """Delete note from track."""
-        raise NotImplementedError("execute not yet implemented")
+        song = state.get_current_song()
+        if song is None:
+            raise ValueError("No song loaded")
+
+        if not 0 <= self.track_index < len(song.tracks):
+            raise ValueError(f"Track index {self.track_index} out of range")
+
+        # Store previous state for undo
+        self._previous_song = song
+
+        # Get the track and remove the note
+        old_track = song.tracks[self.track_index]
+
+        if not 0 <= self.note_index < len(old_track.notes):
+            raise ValueError(f"Note index {self.note_index} out of range")
+
+        # Create new notes tuple without the deleted note
+        notes_list = list(old_track.notes)
+        notes_list.pop(self.note_index)
+        new_notes = tuple(notes_list)
+
+        # Create new track with removed note
+        new_track = replace(old_track, notes=new_notes)
+
+        # Create new song with updated track
+        new_tracks = list(song.tracks)
+        new_tracks[self.track_index] = new_track
+        new_song = replace(song, tracks=tuple(new_tracks))
+
+        # Update state
+        state.set_current_song(new_song)
+        state.mark_dirty()
+
+        return state
 
     def undo(self, state: AppState) -> AppState:
         """Re-add deleted note."""
-        raise NotImplementedError("undo not yet implemented")
+        if self._previous_song is None:
+            raise ValueError("Command has not been executed yet")
+
+        state.set_current_song(self._previous_song)
+        state.mark_dirty()
+
+        return state
 
     @property
     def description(self) -> str:
@@ -98,33 +174,85 @@ class DeleteNoteCommand(Command):
 class CommandHistory:
     """Manages undo/redo command history."""
 
-    def __init__(self, max_history: int = 100):
+    def __init__(self, app_state: AppState, max_history: int = 100):
         """
         Args:
+            app_state: Application state to operate on
             max_history: Maximum number of commands to keep
         """
-        raise NotImplementedError("CommandHistory not yet implemented")
+        self.app_state = app_state
+        self.max_history = max_history
+        self._undo_stack: List[Command] = []
+        self._redo_stack: List[Command] = []
 
     def execute(self, command: Command):
         """Execute command and add to history."""
-        raise NotImplementedError("execute not yet implemented")
+        # Execute the command
+        command.execute(self.app_state)
+
+        # Add to undo stack
+        self._undo_stack.append(command)
+
+        # Limit history size
+        if len(self._undo_stack) > self.max_history:
+            self._undo_stack.pop(0)
+
+        # Clear redo stack when new command is executed
+        self._redo_stack.clear()
 
     def undo(self) -> bool:
         """Undo last command. Returns True if successful."""
-        raise NotImplementedError("undo not yet implemented")
+        if not self.can_undo():
+            return False
+
+        # Pop command from undo stack
+        command = self._undo_stack.pop()
+
+        # Undo the command
+        command.undo(self.app_state)
+
+        # Add to redo stack
+        self._redo_stack.append(command)
+
+        return True
 
     def redo(self) -> bool:
         """Redo last undone command. Returns True if successful."""
-        raise NotImplementedError("redo not yet implemented")
+        if not self.can_redo():
+            return False
+
+        # Pop command from redo stack
+        command = self._redo_stack.pop()
+
+        # Re-execute the command
+        command.execute(self.app_state)
+
+        # Add back to undo stack
+        self._undo_stack.append(command)
+
+        return True
 
     def can_undo(self) -> bool:
         """Check if undo is available."""
-        raise NotImplementedError("can_undo not yet implemented")
+        return len(self._undo_stack) > 0
 
     def can_redo(self) -> bool:
         """Check if redo is available."""
-        raise NotImplementedError("can_redo not yet implemented")
+        return len(self._redo_stack) > 0
 
     def clear(self):
         """Clear all command history."""
-        raise NotImplementedError("clear not yet implemented")
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+
+    def get_undo_description(self) -> Optional[str]:
+        """Get description of command that would be undone."""
+        if self.can_undo():
+            return self._undo_stack[-1].description
+        return None
+
+    def get_redo_description(self) -> Optional[str]:
+        """Get description of command that would be redone."""
+        if self.can_redo():
+            return self._redo_stack[-1].description
+        return None
