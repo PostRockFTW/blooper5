@@ -644,9 +644,8 @@ class PianoRoll:
         # Initial draw
         self.draw()
 
-        # Dock the window if parent docking space provided
-        if parent_docking_space:
-            dpg.configure_item(tag, docked=True, dock_space=parent_docking_space)
+        # Note: DearPyGui windows are dockable by default when created within a window context
+        # No explicit docking configuration needed - user can drag to dock
 
 
 def create_piano_roll_demo():
