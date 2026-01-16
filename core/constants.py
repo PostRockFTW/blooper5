@@ -3,6 +3,7 @@ Musical constants and utilities.
 
 MIDI note names, scales, intervals, etc.
 """
+import math
 
 # MIDI note number to name mapping
 MIDI_NOTE_NAMES = [
@@ -62,7 +63,11 @@ def midi_note_to_name(note_number: int) -> str:
         >>> midi_note_to_name(69)
         'A4'
     """
-    raise NotImplementedError("midi_note_to_name not yet implemented")
+    if not 0 <= note_number <= 127:
+        raise ValueError(f"MIDI note must be 0-127, got {note_number}")
+    octave = (note_number // 12) - 1
+    note_name = MIDI_NOTE_NAMES[note_number % 12]
+    return f"{note_name}{octave}"
 
 
 def name_to_midi_note(note_name: str) -> int:
@@ -84,7 +89,26 @@ def name_to_midi_note(note_name: str) -> int:
         >>> name_to_midi_note("A4")
         69
     """
-    raise NotImplementedError("name_to_midi_note not yet implemented")
+    note_name = note_name.strip().upper()
+
+    # Extract octave number (last character)
+    if not note_name or not note_name[-1].isdigit():
+        raise ValueError(f"Invalid note name format: {note_name}")
+
+    octave = int(note_name[-1])
+    note = note_name[:-1]
+
+    # Find note in list
+    if note not in MIDI_NOTE_NAMES:
+        raise ValueError(f"Invalid note name: {note}")
+
+    note_index = MIDI_NOTE_NAMES.index(note)
+    midi_note = (octave + 1) * 12 + note_index
+
+    if not 0 <= midi_note <= 127:
+        raise ValueError(f"Note {note_name} is out of MIDI range (0-127)")
+
+    return midi_note
 
 
 def get_scale_notes(root: int, scale_name: str) -> list[int]:
@@ -105,7 +129,21 @@ def get_scale_notes(root: int, scale_name: str) -> list[int]:
         >>> get_scale_notes(60, "major")  # C major
         [60, 62, 64, 65, 67, 69, 71]
     """
-    raise NotImplementedError("get_scale_notes not yet implemented")
+    if scale_name not in SCALES:
+        raise ValueError(f"Unknown scale: {scale_name}. Available scales: {list(SCALES.keys())}")
+
+    if not 0 <= root <= 127:
+        raise ValueError(f"Root note must be 0-127, got {root}")
+
+    intervals = SCALES[scale_name]
+    scale_notes = []
+
+    for interval in intervals:
+        note = root + interval
+        if note <= 127:
+            scale_notes.append(note)
+
+    return scale_notes
 
 
 def frequency_to_midi(frequency: float) -> int:
@@ -122,7 +160,15 @@ def frequency_to_midi(frequency: float) -> int:
         >>> frequency_to_midi(440.0)  # A4
         69
     """
-    raise NotImplementedError("frequency_to_midi not yet implemented")
+    if frequency <= 0:
+        raise ValueError(f"Frequency must be positive, got {frequency}")
+
+    # Formula: note = 69 + 12 * log2(frequency / 440)
+    midi_note = 69 + 12 * math.log2(frequency / 440.0)
+    midi_note = round(midi_note)
+
+    # Clamp to valid MIDI range
+    return max(0, min(127, midi_note))
 
 
 def midi_to_frequency(note_number: int) -> float:
@@ -139,4 +185,8 @@ def midi_to_frequency(note_number: int) -> float:
         >>> midi_to_frequency(69)  # A4
         440.0
     """
-    raise NotImplementedError("midi_to_frequency not yet implemented")
+    if not 0 <= note_number <= 127:
+        raise ValueError(f"MIDI note must be 0-127, got {note_number}")
+
+    # Formula: frequency = 440 * 2^((note - 69) / 12)
+    return 440.0 * math.pow(2.0, (note_number - 69) / 12.0)
