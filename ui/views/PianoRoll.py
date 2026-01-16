@@ -484,7 +484,7 @@ class PianoRoll:
 
             with dpg.group(horizontal=True):
                 # Velocity control
-                dpg.add_text("Velocity:", width=80)
+                dpg.add_text("Velocity:")
                 dpg.add_slider_int(
                     default_value=self.current_velocity,
                     min_value=1,
@@ -496,7 +496,8 @@ class PianoRoll:
 
             with dpg.group(horizontal=True):
                 # Note length info
-                dpg.add_text("Note Length:", width=80)
+                dpg.add_text("Note Length:")
+                dpg.add_spacer(width=10)
                 dpg.add_text("Auto (follows grid)", tag="note_length_display", color=(150, 255, 150))
 
     def create_window(self, tag: str = "piano_roll_window"):
