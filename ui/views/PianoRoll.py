@@ -186,6 +186,7 @@ class PianoRoll:
 
         self._draw_background_grid()
         self._draw_grid_lines()
+        self._draw_row_dividers()
         self._draw_notes()
         self._draw_ghost_note()
         self._draw_playhead()
@@ -204,14 +205,6 @@ class PianoRoll:
                 dpg.draw_rectangle(
                     (0, y), (self.width, y + row_h),
                     fill=tuple(bg + [255]),
-                    parent=self.drawlist_id
-                )
-
-                # Muted row divider
-                dpg.draw_line(
-                    (0, y), (self.width, y),
-                    color=tuple(self.theme.row_divider_color + [255]),
-                    thickness=1,
                     parent=self.drawlist_id
                 )
 
@@ -255,6 +248,22 @@ class PianoRoll:
                     (x, 0), (x, self.height),
                     color=tuple(self.theme.measure_line_color + [255]),
                     thickness=2,
+                    parent=self.drawlist_id
+                )
+
+    def _draw_row_dividers(self):
+        """Draw horizontal row dividers (drawn AFTER vertical lines to appear on top)."""
+        row_h = GRID_HEIGHT
+
+        for pitch in range(128):
+            x, y = self.get_coords(0, pitch)
+
+            if -row_h <= y <= self.height:
+                # Draw horizontal line at the top of each row
+                dpg.draw_line(
+                    (0, y), (self.width, y),
+                    color=tuple(self.theme.row_divider_color + [255]),
+                    thickness=1,
                     parent=self.drawlist_id
                 )
 
