@@ -337,8 +337,12 @@ class PianoRoll:
         if self.tool != "draw":
             return
 
-        mouse_x = app_data[1]
-        mouse_y = app_data[2]
+        # Get mouse position from DearPyGui
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_pos = dpg.get_item_pos(self.canvas_id)
+
+        mouse_x = mouse_pos[0] - canvas_pos[0]
+        mouse_y = mouse_pos[1] - canvas_pos[1]
 
         # Convert to pitch and tick
         pitch = self.get_pitch_at(mouse_y)
@@ -361,8 +365,12 @@ class PianoRoll:
 
     def _handle_canvas_right_click(self, sender, app_data):
         """Handle right-click on canvas (select mode)."""
-        mouse_x = app_data[1]
-        mouse_y = app_data[2]
+        # Get mouse position from DearPyGui
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_pos = dpg.get_item_pos(self.canvas_id)
+
+        mouse_x = mouse_pos[0] - canvas_pos[0]
+        mouse_y = mouse_pos[1] - canvas_pos[1]
 
         # Find note under cursor
         pitch = self.get_pitch_at(mouse_y)
