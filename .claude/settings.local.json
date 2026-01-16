@@ -36,7 +36,10 @@
       "WebFetch(domain:gist.github.com)",
       "WebFetch(domain:docs.python.org)",
       "WebFetch(domain:numpy.org)",
-      "WebFetch(domain:stackoverflow.com)"
+      "WebFetch(domain:stackoverflow.com)",
+      "Bash(for branch in feature/core-migration feature/audio-migration feature/plugin-migration)",
+      "Bash(do git checkout $branch)",
+      "Bash(done)"
     ]
   }
 }
