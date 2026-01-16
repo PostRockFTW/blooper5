@@ -205,6 +205,7 @@ class PianoRoll:
                 dpg.draw_rectangle(
                     (0, y), (self.width, y + row_h),
                     fill=tuple(bg + [255]),
+                    color=tuple(bg + [255]),  # Match border to fill (invisible border)
                     parent=self.drawlist_id
                 )
 
