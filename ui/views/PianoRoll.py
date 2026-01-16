@@ -387,6 +387,62 @@ class PianoRoll:
                 self.draw()
                 return
 
+    def _handle_drag_start(self, sender, app_data):
+        """Called when user starts dragging."""
+        # Get mouse position
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_pos = dpg.get_item_pos(self.canvas_id)
+        mouse_x = mouse_pos[0] - canvas_pos[0]
+        mouse_y = mouse_pos[1] - canvas_pos[1]
+
+        # Find note under cursor
+        pitch = self.get_pitch_at(mouse_y)
+        tick = self.get_tick_at(mouse_x)
+
+        for note in self.notes:
+            note_start_tick = note.start * TPQN
+            note_end_tick = note_start_tick + (note.duration * TPQN)
+
+            if (note.note == pitch and note_start_tick <= tick <= note_end_tick):
+                self.is_dragging = True
+                self.drag_start_pos = (tick, pitch)
+                self.ghost_note = {"note": note, "orig_start": note.start, "orig_pitch": note.note}
+                # Select the note being dragged
+                note.selected = True
+                break
+
+    def _handle_drag(self, sender, app_data):
+        """Called while dragging."""
+        if not self.is_dragging or self.ghost_note is None:
+            return
+
+        # Get current mouse position
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_pos = dpg.get_item_pos(self.canvas_id)
+        mouse_x = mouse_pos[0] - canvas_pos[0]
+        mouse_y = mouse_pos[1] - canvas_pos[1]
+
+        # Convert to pitch and tick
+        new_pitch = self.get_pitch_at(mouse_y)
+        new_tick = self.get_tick_at(mouse_x)
+        snapped_tick = self.snap_to_grid(new_tick)
+
+        # Update note position
+        note = self.ghost_note["note"]
+        note.note = new_pitch
+        note.start = snapped_tick / TPQN
+
+        # Redraw
+        self.draw()
+
+    def _handle_drag_end(self, sender, app_data):
+        """Called when drag ends."""
+        if self.is_dragging:
+            self.is_dragging = False
+            self.drag_start_pos = None
+            self.ghost_note = None
+            self.draw()
+
     def zoom_in(self):
         """Zoom in horizontally."""
         self.zoom_x = min(self.zoom_x * 1.2, 10.0)
@@ -537,8 +593,19 @@ class PianoRoll:
             with dpg.item_handler_registry() as handler:
                 dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Left, callback=self._handle_canvas_click)
                 dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Right, callback=self._handle_canvas_right_click)
+                dpg.add_item_active_handler(callback=self._handle_drag_start)
+                dpg.add_item_drag_handler(callback=self._handle_drag)
+                dpg.add_item_deactivated_handler(callback=self._handle_drag_end)
 
             dpg.bind_item_handler_registry(self.canvas_id, handler)
+
+        # Keyboard handlers (window-level)
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(dpg.mvKey_Delete, callback=self._delete_selected_notes)
+            dpg.add_key_press_handler(dpg.mvKey_Escape, callback=self._deselect_all_notes)
+            dpg.add_key_press_handler(dpg.mvKey_Spacebar, callback=self._toggle_playback)
+            # Ctrl+A for select all (using key_down to detect Ctrl)
+            dpg.add_key_press_handler(dpg.mvKey_A, callback=self._handle_key_a)
 
         self.window_id = tag
 
