@@ -1,24 +1,20 @@
 """
-Piano Roll - Grid-based MIDI note editor for Blooper5.
+Piano Roll - Grid-based MIDI note editor for Blooper5 (Redesigned)
 
-Features:
-- Grid rendering with beat/measure lines
-- Note creation (click to add)
-- Note editing (drag to move, resize handles for duration)
-- Multi-select functionality (click+drag selection box)
-- Velocity editing (visual indicator + controls)
-- Quantize controls (snap to grid)
-- Zoom in/out (horizontal: time, vertical: pitch)
-- Playhead visualization
-- Ghost notes during drag operations
+Improvements based on user feedback:
+- Color customization sidebar for live theme adjustment
+- Thinner, more muted grid lines
+- Smart note drawing (width = 2-4x height based on grid snap)
+- Draw/Select tools (left-click draw, right-click select)
+- Movable toolbar with note length, velocity, note mode
+- Blooper4-inspired appearance
 """
 
 import dearpygui.dearpygui as dpg
 from typing import List, Tuple, Optional, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
-# Mock Note class (will be replaced with core.models.Note)
 @dataclass
 class MockNote:
     """Temporary note class until backend agents complete core.models.py"""
@@ -29,245 +25,275 @@ class MockNote:
     selected: bool = False
 
 
+@dataclass
+class PianoRollTheme:
+    """Customizable theme colors for Piano Roll"""
+    bg_color: List[int] = field(default_factory=lambda: [15, 15, 18])
+    bg_color_black_key: List[int] = field(default_factory=lambda: [12, 12, 15])
+    grid_line_color: List[int] = field(default_factory=lambda: [25, 25, 28])  # Muted
+    triplet_line_color: List[int] = field(default_factory=lambda: [18, 18, 21])  # Very muted
+    measure_line_color: List[int] = field(default_factory=lambda: [60, 60, 70])  # Brighter but not too much
+    row_divider_color: List[int] = field(default_factory=lambda: [20, 20, 23])  # Muted
+    note_colors: List[List[int]] = field(default_factory=lambda: [
+        [140, 70, 70],    # C0-B0: Dark red
+        [150, 90, 60],    # C1-B1: Orange-brown
+        [160, 140, 60],   # C2-B2: Yellow-brown
+        [90, 160, 90],    # C3-B3: Green
+        [60, 140, 180],   # C4-B4: Cyan
+        [90, 90, 180],    # C5-B5: Blue
+        [140, 90, 160],   # C6-B6: Purple
+        [180, 90, 120],   # C7-B7: Pink
+    ])
+    selected_note_brightness: int = 50  # How much brighter selected notes are
+    playhead_color: List[int] = field(default_factory=lambda: [255, 80, 80])
+    grid_line_thickness: int = 1  # Thin lines
+
+
 # Constants
-TPQN = 480  # Ticks per quarter note (will come from core.constants)
+TPQN = 480  # Ticks per quarter note
 GRID_HEIGHT = 12  # Pixel height per MIDI note row
-OCTAVE_COLORS = [
-    (140, 70, 70),    # C0-B0: Dark red
-    (150, 90, 60),    # C1-B1: Orange-brown
-    (160, 140, 60),   # C2-B2: Yellow-brown
-    (90, 160, 90),    # C3-B3: Green
-    (60, 140, 180),   # C4-B4: Cyan
-    (90, 90, 180),    # C5-B5: Blue
-    (140, 90, 160),   # C6-B6: Purple
-    (180, 90, 120),   # C7-B7: Pink
-    (200, 120, 120),  # C8-B8: Light red
-    (220, 150, 150),  # C9-B9: Very light red
-    (240, 180, 180),  # C10-B10: Pale pink
-]
 
 
 class PianoRoll:
-    """Piano Roll editor with grid-based MIDI note editing."""
+    """Piano Roll editor with improved UX based on user feedback."""
 
-    def __init__(self, width: int = 800, height: int = 600):
+    def __init__(self, width: int = 1000, height: int = 600):
         self.width = width
         self.height = height
 
+        # Theme (customizable)
+        self.theme = PianoRollTheme()
+
         # Viewport/scrolling
-        self.scroll_x = 0        # Horizontal scroll in ticks
-        self.scroll_y = 60 * GRID_HEIGHT  # Vertical scroll (start at middle C)
-        self.zoom_x = 0.537      # Horizontal zoom (pixels per tick)
-        self.zoom_y = 1.0        # Vertical zoom (row height multiplier)
+        self.scroll_x = 0
+        self.scroll_y = 60 * GRID_HEIGHT
+        self.zoom_x = 0.537
+
+        # Tool state
+        self.tool = "draw"  # "draw" or "select"
+        self.note_mode = "held"  # "held" or "repeat"
+
+        # Note drawing parameters
+        self.current_velocity = 100  # Controlled by velocity slider
+        self.grid_snap = TPQN  # Current snap value (1/4 note by default)
+        self.note_length_beats = 1.0  # Default note length in beats
 
         # Editing state
         self.is_dragging = False
         self.drag_start_pos: Optional[Tuple[int, int]] = None
-        self.current_note: Optional[MockNote] = None
-        self.ghost_notes: List[Dict[str, Any]] = []  # Preview notes during drag
+        self.ghost_note: Optional[Dict[str, Any]] = None
         self.selected_notes: List[MockNote] = []
-        self.tool = "pencil"  # pencil, select, erase
 
         # Playback
         self.current_tick = 0
-        self.is_playing = False
 
-        # Grid settings
-        self.show_triplet_grid = True
-        self.snap_to_grid = True
-        self.quantize_value = TPQN  # 1/4 note by default
-
-        # Mock song data (until backend is ready)
+        # Mock song data
         self.song_length_ticks = TPQN * 4 * 8  # 8 measures
         self.notes: List[MockNote] = self._create_mock_notes()
 
-        # DearPyGui window/drawlist IDs
+        # DearPyGui IDs
         self.window_id = None
         self.canvas_id = None
         self.drawlist_id = None
+        self.toolbar_window_id = None
+        self.color_sidebar_id = None
 
     def _create_mock_notes(self) -> List[MockNote]:
         """Create some mock notes for testing UI."""
         return [
-            MockNote(note=60, start=0.0, duration=1.0, velocity=100),     # C4
-            MockNote(note=64, start=1.0, duration=1.0, velocity=90),      # E4
-            MockNote(note=67, start=2.0, duration=1.0, velocity=85),      # G4
-            MockNote(note=72, start=3.0, duration=2.0, velocity=95),      # C5
-            MockNote(note=60, start=4.0, duration=0.5, velocity=80),      # C4
-            MockNote(note=64, start=4.5, duration=0.5, velocity=75),      # E4
-            MockNote(note=67, start=5.0, duration=0.5, velocity=70),      # G4
-            MockNote(note=72, start=5.5, duration=0.5, velocity=85),      # C5
+            MockNote(note=60, start=0.0, duration=1.0, velocity=100),
+            MockNote(note=64, start=1.0, duration=1.0, velocity=90),
+            MockNote(note=67, start=2.0, duration=1.0, velocity=85),
+            MockNote(note=72, start=3.0, duration=2.0, velocity=95),
         ]
 
     def get_coords(self, tick: float, pitch: int) -> Tuple[float, float]:
         """Convert tick/pitch to screen coordinates."""
         x = (tick - self.scroll_x) * self.zoom_x
-        y = (127 - pitch) * GRID_HEIGHT * self.zoom_y - self.scroll_y
+        y = (127 - pitch) * GRID_HEIGHT - self.scroll_y
         return x, y
 
     def get_pitch_at(self, y: float) -> int:
         """Convert screen Y coordinate to MIDI pitch."""
         relative_y = y + self.scroll_y
-        pitch = 127 - int(relative_y / (GRID_HEIGHT * self.zoom_y))
-        return max(0, min(127, pitch))  # Clamp to valid range
+        pitch = 127 - int(relative_y / GRID_HEIGHT)
+        return max(0, min(127, pitch))
 
     def get_tick_at(self, x: float) -> float:
         """Convert screen X coordinate to tick position."""
         tick = x / self.zoom_x + self.scroll_x
         return max(0.0, tick)
 
-    def _get_grid_spacing(self) -> Tuple[int, int]:
-        """Calculate grid spacing based on zoom level (binary and triplet)."""
-        # Binary grid spacing (powers of 2)
-        if self.zoom_x < 0.25:
-            grid_spacing = TPQN * 4  # Whole notes
-        elif self.zoom_x < 0.4:
-            grid_spacing = TPQN * 2  # Half notes
-        elif self.zoom_x < 0.7:
-            grid_spacing = TPQN      # Quarter notes
-        elif self.zoom_x < 1.2:
-            grid_spacing = TPQN // 2  # 8th notes
-        elif self.zoom_x < 2.0:
-            grid_spacing = TPQN // 4  # 16th notes
-        elif self.zoom_x < 3.5:
-            grid_spacing = TPQN // 8  # 32nd notes
-        else:
-            grid_spacing = TPQN // 16  # 64th notes
+    def snap_to_grid(self, tick: float) -> float:
+        """Snap tick value to current grid."""
+        return round(tick / self.grid_snap) * self.grid_snap
 
-        triplet_spacing = grid_spacing // 3 if self.show_triplet_grid else grid_spacing
+    def _get_grid_spacing(self) -> Tuple[int, int]:
+        """Calculate grid spacing based on zoom level."""
+        if self.zoom_x < 0.25:
+            grid_spacing = TPQN * 4
+        elif self.zoom_x < 0.4:
+            grid_spacing = TPQN * 2
+        elif self.zoom_x < 0.7:
+            grid_spacing = TPQN
+        elif self.zoom_x < 1.2:
+            grid_spacing = TPQN // 2
+        elif self.zoom_x < 2.0:
+            grid_spacing = TPQN // 4
+        elif self.zoom_x < 3.5:
+            grid_spacing = TPQN // 8
+        else:
+            grid_spacing = TPQN // 16
+
+        self.grid_snap = grid_spacing  # Update snap value
+        triplet_spacing = grid_spacing // 3
         return grid_spacing, triplet_spacing
 
+    def _calculate_note_width(self) -> float:
+        """Calculate default note width: 2-4x note height based on current grid.
+
+        At any grid scale, a note matching that grid duration will be ~3x height.
+        """
+        # Note height in pixels
+        note_height = GRID_HEIGHT
+
+        # Target: 3x height for notes matching current grid snap
+        target_width_pixels = note_height * 3
+
+        # What duration (in ticks) gives us that width?
+        # width_pixels = duration_ticks * zoom_x
+        # So: duration_ticks = width_pixels / zoom_x
+        duration_ticks = target_width_pixels / self.zoom_x
+
+        # Convert to beats
+        self.note_length_beats = duration_ticks / TPQN
+
+        return duration_ticks
+
     def draw(self):
-        """Main draw function - renders the piano roll."""
+        """Main draw function."""
         if not self.drawlist_id:
             return
 
+        dpg.delete_item(self.drawlist_id, children_only=True)
+
+        # Background
         dpg.draw_rectangle(
             (0, 0), (self.width, self.height),
-            color=(0, 0, 0, 0),
-            fill=(15, 15, 20, 255),
+            fill=tuple(self.theme.bg_color + [255]),
             parent=self.drawlist_id
         )
 
-        # Draw in layers
         self._draw_background_grid()
         self._draw_grid_lines()
         self._draw_notes()
-        self._draw_ghost_notes()
+        self._draw_ghost_note()
         self._draw_playhead()
-        self._draw_selection_box()
 
     def _draw_background_grid(self):
-        """Draw alternating row backgrounds (black keys darker)."""
-        row_h = GRID_HEIGHT * self.zoom_y
+        """Draw alternating row backgrounds."""
+        row_h = GRID_HEIGHT
 
         for pitch in range(128):
             x, y = self.get_coords(0, pitch)
 
-            # Only draw visible rows
             if -row_h <= y <= self.height:
-                # Black keys get darker background
                 is_black_key = (pitch % 12) in [1, 3, 6, 8, 10]
-                bg_color = (15, 15, 18, 255) if is_black_key else (20, 20, 25, 255)
+                bg = self.theme.bg_color_black_key if is_black_key else self.theme.bg_color
 
                 dpg.draw_rectangle(
                     (0, y), (self.width, y + row_h),
-                    fill=bg_color,
+                    fill=tuple(bg + [255]),
                     parent=self.drawlist_id
                 )
 
-                # Horizontal divider line
+                # Muted row divider
                 dpg.draw_line(
                     (0, y), (self.width, y),
-                    color=(30, 30, 35, 255),
+                    color=tuple(self.theme.row_divider_color + [255]),
                     thickness=1,
                     parent=self.drawlist_id
                 )
 
     def _draw_grid_lines(self):
-        """Draw vertical grid lines (beats, measures, triplets)."""
+        """Draw vertical grid lines (thin and muted)."""
         grid_spacing, triplet_spacing = self._get_grid_spacing()
-        measure_spacing = TPQN * 4  # 4 beats per measure
+        measure_spacing = TPQN * 4
 
-        # Pass 1: Draw triplet subdivision lines (faintest)
-        if self.show_triplet_grid:
-            for t in range(0, self.song_length_ticks, triplet_spacing):
-                if t % grid_spacing == 0 or t % measure_spacing == 0:
-                    continue  # Skip positions that overlap with primary grid
-
-                x, _ = self.get_coords(t, 0)
-                if 0 <= x <= self.width:
-                    dpg.draw_line(
-                        (x, 0), (x, self.height),
-                        color=(25, 25, 30, 255),
-                        thickness=1,
-                        parent=self.drawlist_id
-                    )
-
-        # Pass 2: Draw binary grid lines (medium brightness)
-        for t in range(0, self.song_length_ticks, grid_spacing):
-            if t % measure_spacing == 0:
-                continue  # Skip measure lines
-
+        # Triplet lines (very faint)
+        for t in range(0, self.song_length_ticks, triplet_spacing):
+            if t % grid_spacing == 0 or t % measure_spacing == 0:
+                continue
             x, _ = self.get_coords(t, 0)
             if 0 <= x <= self.width:
                 dpg.draw_line(
                     (x, 0), (x, self.height),
-                    color=(35, 35, 40, 255),
-                    thickness=1,
+                    color=tuple(self.theme.triplet_line_color + [255]),
+                    thickness=self.theme.grid_line_thickness,
                     parent=self.drawlist_id
                 )
 
-        # Pass 3: Draw measure lines (brightest and thicker)
+        # Binary grid lines (muted)
+        for t in range(0, self.song_length_ticks, grid_spacing):
+            if t % measure_spacing == 0:
+                continue
+            x, _ = self.get_coords(t, 0)
+            if 0 <= x <= self.width:
+                dpg.draw_line(
+                    (x, 0), (x, self.height),
+                    color=tuple(self.theme.grid_line_color + [255]),
+                    thickness=self.theme.grid_line_thickness,
+                    parent=self.drawlist_id
+                )
+
+        # Measure lines (brighter, slightly thicker)
         for bar in range(0, self.song_length_ticks // measure_spacing + 1):
             t = bar * measure_spacing
             x, _ = self.get_coords(t, 0)
             if 0 <= x <= self.width:
                 dpg.draw_line(
                     (x, 0), (x, self.height),
-                    color=(90, 90, 100, 255),
+                    color=tuple(self.theme.measure_line_color + [255]),
                     thickness=2,
                     parent=self.drawlist_id
                 )
 
     def _draw_notes(self):
-        """Draw all MIDI notes."""
-        row_h = GRID_HEIGHT * self.zoom_y
+        """Draw all notes."""
+        row_h = GRID_HEIGHT
 
         for note in self.notes:
-            # Skip notes beyond song length
             if note.start * TPQN >= self.song_length_ticks:
                 continue
 
             nx, ny = self.get_coords(note.start * TPQN, note.note)
             nw = note.duration * TPQN * self.zoom_x
 
-            # Only draw if visible
             if nx + nw >= 0 and nx <= self.width:
-                # Clamp to visible area
                 visible_x = max(0, nx)
                 visible_width = min(nw, self.width - visible_x)
 
                 # Color by octave
-                octave = min(note.note // 12, len(OCTAVE_COLORS) - 1)
-                color = OCTAVE_COLORS[octave]
+                octave = min(note.note // 12, len(self.theme.note_colors) - 1)
+                color = self.theme.note_colors[octave]
 
-                # Highlight selected notes
+                # Brighten if selected
                 if note.selected:
-                    color = tuple(min(c + 50, 255) for c in color)
+                    color = [min(c + self.theme.selected_note_brightness, 255) for c in color]
 
-                # Draw note rectangle
+                # Draw note
                 dpg.draw_rectangle(
                     (visible_x, ny + 1),
                     (visible_x + visible_width - 1, ny + row_h - 2),
-                    fill=(*color, 255),
-                    color=(*color, 255),
+                    fill=tuple(color + [255]),
+                    color=tuple([min(c + 20, 255) for c in color] + [255]),
+                    thickness=1,
                     parent=self.drawlist_id
                 )
 
-                # Velocity indicator (brightness bar on left edge)
-                vel_width = 4
-                vel_brightness = int(note.velocity / 127.0 * 100)
+                # Velocity indicator (thin bar on left)
+                vel_width = 3
+                vel_brightness = int(note.velocity / 127.0 * 120)
                 dpg.draw_rectangle(
                     (visible_x, ny + 1),
                     (visible_x + vel_width, ny + row_h - 2),
@@ -275,122 +301,243 @@ class PianoRoll:
                     parent=self.drawlist_id
                 )
 
-    def _draw_ghost_notes(self):
-        """Draw semi-transparent preview notes during drag operations."""
-        if not self.ghost_notes:
+    def _draw_ghost_note(self):
+        """Draw preview note during drawing."""
+        if not self.ghost_note:
             return
 
-        row_h = GRID_HEIGHT * self.zoom_y
+        row_h = GRID_HEIGHT
+        gx, gy = self.get_coords(self.ghost_note['tick'], self.ghost_note['pitch'])
+        gw = self.ghost_note['duration'] * self.zoom_x
 
-        for ghost in self.ghost_notes:
-            if ghost['tick'] >= self.song_length_ticks:
-                continue
-
-            gx, gy = self.get_coords(ghost['tick'], ghost['pitch'])
-            gw = ghost['duration'] * self.zoom_x
-
-            if gx + gw >= 0 and gx <= self.width:
-                visible_x = max(0, gx)
-                visible_width = min(gw, self.width - visible_x)
-
-                dpg.draw_rectangle(
-                    (visible_x, gy + 1),
-                    (visible_x + visible_width - 1, gy + row_h - 2),
-                    fill=(100, 100, 100, 128),
-                    color=(150, 150, 150, 128),
-                    parent=self.drawlist_id
-                )
+        if 0 <= gx <= self.width:
+            dpg.draw_rectangle(
+                (gx, gy + 1),
+                (gx + gw - 1, gy + row_h - 2),
+                fill=(100, 100, 100, 100),
+                color=(150, 150, 150, 150),
+                thickness=1,
+                parent=self.drawlist_id
+            )
 
     def _draw_playhead(self):
-        """Draw the playback position indicator."""
+        """Draw playback position."""
         if self.current_tick > 0:
             px, _ = self.get_coords(self.current_tick, 0)
             if 0 <= px <= self.width:
                 dpg.draw_line(
                     (px, 0), (px, self.height),
-                    color=(255, 80, 80, 255),
+                    color=tuple(self.theme.playhead_color + [255]),
                     thickness=2,
                     parent=self.drawlist_id
                 )
 
-    def _draw_selection_box(self):
-        """Draw selection rectangle during multi-select."""
-        if self.is_dragging and self.drag_start_pos and self.tool == "select":
-            # This would be implemented with mouse tracking
-            pass
+    def _handle_canvas_click(self, sender, app_data):
+        """Handle left-click on canvas (draw mode)."""
+        if self.tool != "draw":
+            return
+
+        mouse_x = app_data[1]
+        mouse_y = app_data[2]
+
+        # Convert to pitch and tick
+        pitch = self.get_pitch_at(mouse_y)
+        tick = self.get_tick_at(mouse_x)
+        snapped_tick = self.snap_to_grid(tick)
+
+        # Calculate note duration based on current grid
+        duration_ticks = self._calculate_note_width()
+
+        # Create new note
+        new_note = MockNote(
+            note=pitch,
+            start=snapped_tick / TPQN,
+            duration=self.note_length_beats,
+            velocity=self.current_velocity,
+            selected=False
+        )
+        self.notes.append(new_note)
+        self.draw()
+
+    def _handle_canvas_right_click(self, sender, app_data):
+        """Handle right-click on canvas (select mode)."""
+        mouse_x = app_data[1]
+        mouse_y = app_data[2]
+
+        # Find note under cursor
+        pitch = self.get_pitch_at(mouse_y)
+        tick = self.get_tick_at(mouse_x)
+
+        # Check if we clicked on a note
+        for note in self.notes:
+            note_start_tick = note.start * TPQN
+            note_end_tick = note_start_tick + (note.duration * TPQN)
+
+            if (note.note == pitch and
+                note_start_tick <= tick <= note_end_tick):
+                note.selected = not note.selected
+                self.draw()
+                return
 
     def zoom_in(self):
         """Zoom in horizontally."""
         self.zoom_x = min(self.zoom_x * 1.2, 10.0)
+        self.draw()
 
     def zoom_out(self):
         """Zoom out horizontally."""
         self.zoom_x = max(self.zoom_x / 1.2, 0.1)
+        self.draw()
 
-    def quantize_notes(self):
-        """Snap all selected notes to grid."""
-        for note in self.selected_notes:
-            # Quantize start time
-            tick = note.start * TPQN
-            quantized_tick = round(tick / self.quantize_value) * self.quantize_value
-            note.start = quantized_tick / TPQN
+    def _create_color_sidebar(self):
+        """Create color customization sidebar."""
+        with dpg.window(label="Theme Customizer", pos=(self.width + 30, 10),
+                       width=300, height=600, tag="theme_sidebar"):
+            dpg.add_text("Color Customization", color=(255, 255, 100))
+            dpg.add_separator()
 
-            # Optionally quantize duration
-            duration_ticks = note.duration * TPQN
-            quantized_duration = round(duration_ticks / self.quantize_value) * self.quantize_value
-            note.duration = max(quantized_duration / TPQN, self.quantize_value / TPQN)
+            # Background colors
+            dpg.add_text("Background Colors:")
+            dpg.add_color_edit(
+                label="BG Color",
+                default_value=self.theme.bg_color + [255],
+                callback=lambda s, v: self._update_theme_color('bg_color', v[:3]),
+                no_alpha=True
+            )
+            dpg.add_color_edit(
+                label="Black Key BG",
+                default_value=self.theme.bg_color_black_key + [255],
+                callback=lambda s, v: self._update_theme_color('bg_color_black_key', v[:3]),
+                no_alpha=True
+            )
+
+            dpg.add_separator()
+            dpg.add_text("Grid Line Colors:")
+            dpg.add_color_edit(
+                label="Grid Lines",
+                default_value=self.theme.grid_line_color + [255],
+                callback=lambda s, v: self._update_theme_color('grid_line_color', v[:3]),
+                no_alpha=True
+            )
+            dpg.add_color_edit(
+                label="Triplet Lines",
+                default_value=self.theme.triplet_line_color + [255],
+                callback=lambda s, v: self._update_theme_color('triplet_line_color', v[:3]),
+                no_alpha=True
+            )
+            dpg.add_color_edit(
+                label="Measure Lines",
+                default_value=self.theme.measure_line_color + [255],
+                callback=lambda s, v: self._update_theme_color('measure_line_color', v[:3]),
+                no_alpha=True
+            )
+
+            dpg.add_separator()
+            dpg.add_text("Other:")
+            dpg.add_color_edit(
+                label="Playhead",
+                default_value=self.theme.playhead_color + [255],
+                callback=lambda s, v: self._update_theme_color('playhead_color', v[:3]),
+                no_alpha=True
+            )
+
+            dpg.add_separator()
+            dpg.add_button(label="Reset to Blooper4 Theme", callback=self._reset_theme)
+
+    def _update_theme_color(self, attr: str, color: List[int]):
+        """Update theme color and redraw."""
+        setattr(self.theme, attr, color)
+        self.draw()
+
+    def _reset_theme(self):
+        """Reset to default Blooper4-inspired theme."""
+        self.theme = PianoRollTheme()
+        self.draw()
+
+    def _create_toolbar(self):
+        """Create movable toolbar with note controls."""
+        with dpg.window(label="Note Controls", pos=(10, self.height + 80),
+                       width=600, height=150, tag="note_toolbar"):
+            with dpg.group(horizontal=True):
+                # Tool selection
+                dpg.add_text("Tool:")
+                dpg.add_radio_button(
+                    items=["Draw (Left-click)", "Select (Right-click always selects)"],
+                    default_value="Draw (Left-click)",
+                    callback=lambda s, v: setattr(self, 'tool', 'draw' if 'Draw' in v else 'select'),
+                    horizontal=True
+                )
+
+            dpg.add_separator()
+
+            with dpg.group(horizontal=True):
+                # Note mode
+                dpg.add_text("Note Mode:")
+                dpg.add_radio_button(
+                    items=["Held Note", "Note Repeat"],
+                    default_value="Held Note",
+                    callback=lambda s, v: setattr(self, 'note_mode', 'held' if 'Held' in v else 'repeat'),
+                    horizontal=True
+                )
+
+            dpg.add_separator()
+
+            with dpg.group(horizontal=True):
+                # Velocity control
+                dpg.add_text("Velocity:", width=80)
+                dpg.add_slider_int(
+                    default_value=self.current_velocity,
+                    min_value=1,
+                    max_value=127,
+                    callback=lambda s, v: setattr(self, 'current_velocity', v),
+                    width=200
+                )
+                dpg.add_text("100", tag="velocity_display")
+
+            with dpg.group(horizontal=True):
+                # Note length info
+                dpg.add_text("Note Length:", width=80)
+                dpg.add_text("Auto (follows grid)", tag="note_length_display", color=(150, 255, 150))
 
     def create_window(self, tag: str = "piano_roll_window"):
-        """Create the DearPyGui window for the piano roll."""
-        with dpg.window(label="Piano Roll", tag=tag, width=self.width + 20, height=self.height + 100):
-            # Toolbar
+        """Create the DearPyGui window."""
+        with dpg.window(label="Piano Roll (Redesigned)", tag=tag,
+                       width=self.width + 20, height=self.height + 60, pos=(10, 10)):
+            # Zoom controls
             with dpg.group(horizontal=True):
-                dpg.add_button(label="Pencil", callback=lambda: setattr(self, 'tool', 'pencil'))
-                dpg.add_button(label="Select", callback=lambda: setattr(self, 'tool', 'select'))
-                dpg.add_button(label="Erase", callback=lambda: setattr(self, 'tool', 'erase'))
-                dpg.add_spacer(width=20)
                 dpg.add_button(label="Zoom In", callback=self.zoom_in)
                 dpg.add_button(label="Zoom Out", callback=self.zoom_out)
-                dpg.add_spacer(width=20)
-                dpg.add_button(label="Quantize", callback=self.quantize_notes)
+                dpg.add_text("Left-click: Draw | Right-click: Select | Scroll: Zoom", color=(150, 150, 150))
 
-            # Canvas for drawing
+            # Canvas
             self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
             self.drawlist_id = self.canvas_id
 
-            # Register handler for drawing updates
-            with dpg.handler_registry():
-                dpg.add_mouse_wheel_handler(callback=self._handle_scroll)
+            # Mouse handlers
+            with dpg.item_handler_registry() as handler:
+                dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Left, callback=self._handle_canvas_click)
+                dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Right, callback=self._handle_canvas_right_click)
+
+            dpg.bind_item_handler_registry(self.canvas_id, handler)
 
         self.window_id = tag
+
+        # Create sidebar and toolbar
+        self._create_color_sidebar()
+        self._create_toolbar()
 
         # Initial draw
         self.draw()
 
-    def _handle_scroll(self, sender, app_data):
-        """Handle mouse wheel for zooming."""
-        if app_data > 0:
-            self.zoom_in()
-        else:
-            self.zoom_out()
-        self.draw()
-
-    def update(self, current_tick: int):
-        """Update playhead position and redraw."""
-        self.current_tick = current_tick
-        if self.drawlist_id:
-            dpg.delete_item(self.drawlist_id, children_only=True)
-            self.draw()
-
 
 def create_piano_roll_demo():
-    """Demo function to test the piano roll."""
+    """Demo function."""
     dpg.create_context()
 
-    piano_roll = PianoRoll(width=1200, height=600)
+    piano_roll = PianoRoll(width=1000, height=600)
     piano_roll.create_window()
 
-    dpg.create_viewport(title="Piano Roll Demo", width=1280, height=720)
+    dpg.create_viewport(title="Blooper5 - Piano Roll (Redesigned)", width=1350, height=850)
     dpg.setup_dearpygui()
     dpg.show_viewport()
     dpg.start_dearpygui()
