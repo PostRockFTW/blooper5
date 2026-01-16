@@ -45,7 +45,8 @@
       "Bash(\"/c/Program Files/GitHub CLI/gh\" --version)",
       "Bash(\"/c/Program Files/GitHub CLI/gh\" auth status)",
       "Bash(\"/c/Program Files/GitHub CLI/gh\" auth login --web)",
-      "Bash(\"/c/Program Files/GitHub CLI/gh\" repo create blooper5 --public --source=. --remote=origin --description=\"Blooper 5.0 - Professional DAW built with DearPyGui and Pure Python Audio\")"
+      "Bash(\"/c/Program Files/GitHub CLI/gh\" repo create blooper5 --public --source=. --remote=origin --description=\"Blooper 5.0 - Professional DAW built with DearPyGui and Pure Python Audio\")",
+      "Bash(git branch:*)"
     ]
   }
 }
