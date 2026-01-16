@@ -596,14 +596,6 @@ class PianoRoll:
 
             dpg.bind_item_handler_registry(self.canvas_id, handler)
 
-        # Keyboard handlers (window-level)
-        with dpg.handler_registry():
-            dpg.add_key_press_handler(dpg.mvKey_Delete, callback=self._delete_selected_notes)
-            dpg.add_key_press_handler(dpg.mvKey_Escape, callback=self._deselect_all_notes)
-            dpg.add_key_press_handler(dpg.mvKey_Spacebar, callback=self._toggle_playback)
-            # Ctrl+A for select all (using key_down to detect Ctrl)
-            dpg.add_key_press_handler(dpg.mvKey_A, callback=self._handle_key_a)
-
         self.window_id = tag
 
         # Create sidebar and toolbar
