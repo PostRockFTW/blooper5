@@ -60,6 +60,49 @@ class Note:
 
 
 @dataclass(frozen=True)
+class MeasureMetadata:
+    """
+    Metadata for a single measure.
+
+    Stores time signature and tempo information for a specific measure.
+    Designed to map cleanly to MIDI meta events (SetTempo 0xFF 0x51, TimeSignature 0xFF 0x58).
+
+    Attributes:
+        measure_index: Index of this measure (0-based)
+        start_tick: Absolute tick position where measure starts
+        time_signature: (numerator, denominator) for this measure
+        bpm: Tempo for this measure
+        length_ticks: Duration of this measure in ticks
+    """
+    measure_index: int
+    start_tick: int
+    time_signature: Tuple[int, int]
+    bpm: float
+    length_ticks: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "measure_index": self.measure_index,
+            "start_tick": self.start_tick,
+            "time_signature": list(self.time_signature),
+            "bpm": self.bpm,
+            "length_ticks": self.length_ticks,
+        }
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'MeasureMetadata':
+        """Create MeasureMetadata from dictionary."""
+        return MeasureMetadata(
+            measure_index=data["measure_index"],
+            start_tick=data["start_tick"],
+            time_signature=tuple(data["time_signature"]),
+            bpm=data["bpm"],
+            length_ticks=data["length_ticks"],
+        )
+
+
+@dataclass(frozen=True)
 class Track:
     """
     Single track containing notes and settings (Blooper 4.1 schema).
@@ -212,12 +255,13 @@ class Song:
 
     Attributes:
         name: Song name
-        bpm: Tempo in beats per minute
-        time_signature: (numerator, denominator)
+        bpm: Tempo in beats per minute (default/global, used if no measure_metadata)
+        time_signature: (numerator, denominator) (default/global, used if no measure_metadata)
         tpqn: Ticks per quarter note (timing resolution)
         tracks: Tuple of Track objects (up to 16)
         length_ticks: Song length in ticks
         file_path: Path to saved file (None if unsaved)
+        measure_metadata: Optional tuple of per-measure tempo/time signature data
     """
     name: str
     bpm: float
@@ -226,6 +270,7 @@ class Song:
     tracks: Tuple[Track, ...]
     length_ticks: int = 1920  # 1 bar (4 beats) at 480 TPQN in 4/4 time
     file_path: Optional[str] = None
+    measure_metadata: Optional[Tuple[MeasureMetadata, ...]] = None
 
     def __post_init__(self):
         """Validate song structure."""
@@ -238,7 +283,7 @@ class Song:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
+        result = {
             "version": "5.0.0",
             "name": self.name,
             "bpm": self.bpm,
@@ -248,11 +293,23 @@ class Song:
             "tracks": [t.to_dict() for t in self.tracks],
             "file_path": self.file_path,
         }
+        # Add measure_metadata if present
+        if self.measure_metadata:
+            result["measure_metadata"] = [m.to_dict() for m in self.measure_metadata]
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Song":
         """Create Song from dictionary."""
         tracks = tuple(Track.from_dict(t) for t in data.get("tracks", []))
+
+        # Parse measure_metadata if present
+        measure_metadata = None
+        if "measure_metadata" in data:
+            measure_metadata = tuple(
+                MeasureMetadata.from_dict(m) for m in data["measure_metadata"]
+            )
+
         return cls(
             name=data.get("name", "Untitled"),
             bpm=float(data.get("bpm", 120.0)),
@@ -261,6 +318,7 @@ class Song:
             tracks=tracks,
             length_ticks=data.get("length_ticks", 1920),
             file_path=data.get("file_path"),
+            measure_metadata=measure_metadata,
         )
 
 

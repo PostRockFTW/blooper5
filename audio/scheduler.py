@@ -4,6 +4,7 @@ Note scheduler for real-time audio playback.
 Based on Blooper4's tick-based master clock system.
 """
 from plugins.base import ProcessContext
+from typing import Optional, Tuple
 
 
 class NoteScheduler:
@@ -12,23 +13,54 @@ class NoteScheduler:
 
     Advances playback position in musical ticks and triggers notes
     when the playhead crosses their position.
+
+    Supports per-measure tempo changes via MeasureMetadata.
     """
 
-    def __init__(self, sample_rate=44100):
+    def __init__(self, sample_rate=44100, measure_metadata=None):
         """
         Initialize scheduler.
 
         Args:
             sample_rate: Audio sample rate in Hz
+            measure_metadata: Optional tuple of MeasureMetadata for per-measure tempo
         """
         self.sample_rate = sample_rate
         self.current_tick = 0.0
-        self.bpm = 120.0
+        self.elapsed_time = 0.0  # Actual elapsed time in seconds
+        self.bpm = 120.0  # Default/fallback BPM
         self.tpqn = 480  # Ticks per quarter note
+        self.measure_metadata = measure_metadata  # Per-measure tempo/time sig data
+
+    def get_bpm_at_tick(self, tick: float) -> float:
+        """
+        Get the BPM at a specific tick position.
+
+        Args:
+            tick: Tick position to query
+
+        Returns:
+            BPM at that position (uses measure_metadata if available, else fallback)
+        """
+        if not self.measure_metadata:
+            return self.bpm
+
+        # Find which measure contains this tick
+        for measure in self.measure_metadata:
+            if measure.start_tick <= tick < measure.start_tick + measure.length_ticks:
+                return measure.bpm
+
+        # If tick is beyond all measures, use last measure's BPM
+        if self.measure_metadata:
+            return self.measure_metadata[-1].bpm
+
+        return self.bpm
 
     def advance(self, num_samples):
         """
         Advance playback position by num_samples.
+
+        Uses per-measure tempo if measure_metadata is available.
 
         Args:
             num_samples: Number of audio samples to advance
@@ -37,8 +69,14 @@ class NoteScheduler:
         dt_seconds = num_samples / self.sample_rate
         dt_ms = dt_seconds * 1000.0
 
+        # Track actual elapsed time
+        self.elapsed_time += dt_seconds
+
+        # Get BPM at current tick position (tempo-aware)
+        current_bpm = self.get_bpm_at_tick(self.current_tick)
+
         # Convert to ticks: ticks_per_ms = (BPM * TPQN) / 60000
-        ticks_per_ms = (self.bpm * self.tpqn) / 60000.0
+        ticks_per_ms = (current_bpm * self.tpqn) / 60000.0
         self.current_tick += dt_ms * ticks_per_ms
 
     def check_and_trigger(self, notes, synth, params, prev_tick, current_tick):
@@ -57,10 +95,11 @@ class NoteScheduler:
         """
         triggered = []
 
-        # Create process context for audio generation
+        # Create process context for audio generation (use BPM at current position)
+        current_bpm = self.get_bpm_at_tick(current_tick)
         context = ProcessContext(
             sample_rate=self.sample_rate,
-            bpm=self.bpm,
+            bpm=current_bpm,
             tpqn=self.tpqn,
             current_tick=int(current_tick)
         )
@@ -85,3 +124,4 @@ class NoteScheduler:
     def reset(self):
         """Reset scheduler to beginning."""
         self.current_tick = 0.0
+        self.elapsed_time = 0.0

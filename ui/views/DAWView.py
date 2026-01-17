@@ -66,7 +66,9 @@ class DAWView:
         self.is_looping = False
         self.metronome_enabled = False
         self.bpm = 120
-        self.current_time = 0.0  # Current playback position in seconds
+        self.current_time = 0.0  # Current playback position in seconds (for time display)
+        self.current_tick = 0.0  # Current playback position in ticks (for playhead visual)
+        self.current_bpm = 120.0  # Current BPM at playhead (for tempo changes)
 
         # Audio playback engine
         self.audio_stream = None
@@ -721,6 +723,16 @@ class DAWView:
                 callback=self._on_metronome_toggle
             )
 
+            dpg.add_spacer(width=20)
+
+            # Test track button
+            dpg.add_button(
+                label="Load Test Track",
+                callback=self._create_test_track_with_changing_measures,
+                width=120,
+                height=40
+            )
+
     def _create_bottom_mixer(self):
         """Create collapsible 17-channel mixer strip."""
         with dpg.group(tag="daw_mixer_container"):
@@ -809,6 +821,9 @@ class DAWView:
             # Save current piano roll notes to song before playback
             self._save_current_track_notes()
 
+            # Initialize current_bpm (will be updated by scheduler during playback)
+            self.current_bpm = self.bpm
+
             print(f"[PLAY] Playback started at {self.bpm} BPM")
             dpg.set_item_label("daw_play_button", "Pause")
             self._start_playback()
@@ -822,7 +837,13 @@ class DAWView:
         was_playing = self.is_playing
         self.is_playing = False
         self.current_time = 0.0
+        self.current_tick = 0.0
+        self.current_bpm = self.bpm  # Reset to global BPM
         print("[STOP] Playback stopped")
+
+        # Reset BPM display
+        if dpg.does_item_exist("daw_bpm_input"):
+            dpg.set_value("daw_bpm_input", int(self.bpm))
         dpg.set_item_label("daw_play_button", "Play")
         if was_playing:
             self._stop_playback()
@@ -830,7 +851,7 @@ class DAWView:
 
         # Reset playhead to start
         if self.piano_roll:
-            self.piano_roll.set_playhead_time(0.0, self.bpm)
+            self.piano_roll.set_playhead_tick(0.0)
 
     def _on_record(self):
         """Toggle recording."""
@@ -931,7 +952,8 @@ class DAWView:
                 })
             self.piano_roll.load_track_notes(
                 track_index=16,
-                all_tracks_data=all_tracks_data
+                all_tracks_data=all_tracks_data,
+                song=song
             )
         else:
             # Single track view - use channel color
@@ -939,7 +961,8 @@ class DAWView:
             self.piano_roll.load_track_notes(
                 track_index=track_index,
                 notes=list(track.notes),
-                track_color=self.track_colors[track_index]
+                track_color=self.track_colors[track_index],
+                song=song
             )
 
         # Mark Piano Roll notes as belonging to this project (prevents cross-project pollution)
@@ -978,9 +1001,16 @@ class DAWView:
         print("[PLAYBACK WORKER] Starting real-time playback...")
 
         try:
-            # Create scheduler and set BPM
-            scheduler = NoteScheduler(sample_rate=self.sample_rate)
-            scheduler.bpm = self.bpm
+            # Get current song for tempo/measure metadata
+            song = self.app_state.get_current_song()
+            measure_metadata = song.measure_metadata if song else None
+
+            # Create scheduler with per-measure tempo support
+            scheduler = NoteScheduler(
+                sample_rate=self.sample_rate,
+                measure_metadata=measure_metadata
+            )
+            scheduler.bpm = self.bpm  # Fallback BPM if no measure_metadata
 
             # Get synth parameters (these apply to all triggered notes)
             synth_params = self._get_synth_params()
@@ -1128,9 +1158,12 @@ class DAWView:
 
                 # Update playhead position (for UI, using lock for thread safety)
                 with self.playback_lock:
-                    # Convert ticks back to seconds for time display
-                    beats = scheduler.current_tick / 480
-                    self.current_time = (beats * 60.0) / self.bpm
+                    # Use scheduler's actual elapsed time (tempo-aware) for time display
+                    self.current_time = scheduler.elapsed_time
+                    # Store tick position for accurate playhead visual positioning
+                    self.current_tick = scheduler.current_tick
+                    # Get current BPM at playhead position for display
+                    self.current_bpm = scheduler.get_bpm_at_tick(scheduler.current_tick)
 
             # Start audio streaming with callback (stereo output)
             with sd.OutputStream(samplerate=self.sample_rate, channels=2,
@@ -1193,9 +1226,13 @@ class DAWView:
         if self.is_playing:
             self._update_time_display()
 
-            # Update Piano Roll playhead
+            # Update BPM display to show current tempo at playhead
+            if dpg.does_item_exist("daw_bpm_input"):
+                dpg.set_value("daw_bpm_input", int(self.current_bpm))
+
+            # Update Piano Roll playhead (use tick position for accuracy with tempo changes)
             if self.piano_roll:
-                self.piano_roll.set_playhead_time(self.current_time, self.bpm)
+                self.piano_roll.set_playhead_tick(self.current_tick)
 
         # Check if mouse button is released to stop dragging
         if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
@@ -1227,6 +1264,22 @@ class DAWView:
                 self.left_panel_width = new_width
                 dpg.configure_item("left_panel", width=self.left_panel_width)
                 self.drag_start_pos = mouse_pos
+
+    def _create_test_track_with_changing_measures(self):
+        """Create and load test track with changing time signatures and tempos."""
+        from core.test_data import create_test_track_with_changing_measures
+
+        test_song = create_test_track_with_changing_measures()
+        self.app_state.set_current_song(test_song)
+
+        # Update the view with the test song
+        if self.current_track >= 0 and self.current_track < len(test_song.tracks):
+            self._on_track_selected(self.current_track)
+        else:
+            # Default to first track
+            self._on_track_selected(0)
+
+        print("Test track loaded: 3/4@60bpm -> 4/4@120bpm -> 9/8@240bpm")
 
     # Window Management
 

@@ -13,7 +13,7 @@ Improvements based on user feedback:
 import dearpygui.dearpygui as dpg
 from typing import List, Tuple, Optional, Dict, Any, Callable
 from dataclasses import dataclass, field, replace
-from core.models import Note
+from core.models import Note, Song
 
 
 @dataclass
@@ -48,10 +48,12 @@ GRID_HEIGHT = 12  # Pixel height per MIDI note row
 class PianoRoll:
     """Piano Roll editor with improved UX based on user feedback."""
 
-    def __init__(self, width: int = 1000, height: int = 600, on_notes_changed: Optional[Callable] = None):
+    def __init__(self, width: int = 1000, height: int = 600, on_notes_changed: Optional[Callable] = None,
+                 song: Optional[Song] = None):
         self.width = width
         self.height = height
         self.on_notes_changed = on_notes_changed  # Callback for undo/redo snapshots
+        self.song = song  # Song reference for accessing time signature and measure metadata
 
         # Theme (customizable)
         self.theme = PianoRollTheme()
@@ -69,6 +71,7 @@ class PianoRoll:
         # Note drawing parameters (controlled by external NoteDrawToolbar)
         self.current_velocity = 100  # 1-127
         self.grid_snap = TPQN  # Current snap value (1/4 note by default)
+        self.selected_quantization = TPQN  # Selected quantization from toolbar
         self.snap_enabled = True  # Grid snapping on/off
         self.note_length_beats = 1.0  # Default note length in beats
 
@@ -114,7 +117,7 @@ class PianoRoll:
         self.current_velocity = toolbar_state.get('velocity', self.current_velocity)
         self.snap_enabled = toolbar_state.get('snap_enabled', self.snap_enabled)
 
-        # Convert quantize string to TPQN value
+        # Store selected quantization from toolbar
         quantize = toolbar_state.get('quantize', '1/4')
         quant_map = {
             '1/4': TPQN,  # Quarter note
@@ -123,7 +126,11 @@ class PianoRoll:
             '1/32': TPQN // 8,  # 32nd note
             '1/64': TPQN // 16,  # 64th note
         }
-        self.grid_snap = quant_map.get(quantize, TPQN)
+        self.selected_quantization = quant_map.get(quantize, TPQN)
+
+        # Update grid_snap using smart snap logic
+        visual_grid = self._get_visual_grid_for_zoom()
+        self.grid_snap = min(visual_grid, self.selected_quantization)
 
     def load_notes(self, notes: List[Note]):
         """
@@ -156,7 +163,8 @@ class PianoRoll:
                          track_index: int,
                          notes: List[Note] = None,
                          track_color: Tuple[int, int, int, int] = None,
-                         all_tracks_data: List[dict] = None):
+                         all_tracks_data: List[dict] = None,
+                         song: Optional[Song] = None):
         """
         Load notes for selected track or arrangement view.
 
@@ -165,9 +173,14 @@ class PianoRoll:
             notes: Notes for single track mode
             track_color: RGBA color for single track
             all_tracks_data: List of {notes, color} for arrangement view
+            song: Song reference for accessing time signature and measure metadata
         """
         self.current_track_index = track_index
         self.is_arrangement_view = (track_index == 16)
+
+        # Update song reference if provided
+        if song is not None:
+            self.song = song
 
         if self.is_arrangement_view:
             self.all_tracks_data = all_tracks_data or []
@@ -181,15 +194,35 @@ class PianoRoll:
         if self.drawlist_id:
             self.draw()
 
+    def set_playhead_tick(self, tick: float):
+        """
+        Update playhead position directly from tick value (tempo-aware).
+
+        Args:
+            tick: Current playback position in ticks
+        """
+        new_tick = int(tick)
+
+        # Only redraw if playhead moved significantly (reduce CPU usage)
+        # Update every 20 ticks (~40ms at 120 BPM) for smooth but efficient playback
+        if not hasattr(self, '_last_playhead_tick'):
+            self._last_playhead_tick = -1
+
+        if abs(new_tick - self._last_playhead_tick) >= 20:
+            self.current_tick = new_tick
+            self._last_playhead_tick = new_tick
+            if self.drawlist_id:
+                self.draw()
+
     def set_playhead_time(self, time_seconds: float, bpm: float):
         """
-        Update playhead position (throttled for performance).
+        Update playhead position (legacy method - use set_playhead_tick for tempo changes).
 
         Args:
             time_seconds: Current playback time in seconds
             bpm: Current tempo in BPM
         """
-        # Convert seconds to ticks (assuming 4/4 time signature)
+        # Convert seconds to ticks (assuming constant tempo - not accurate with tempo changes)
         beats = (time_seconds / 60.0) * bpm
         new_tick = int(beats * TPQN)
 
@@ -225,26 +258,32 @@ class PianoRoll:
         """Snap tick value to current grid."""
         return round(tick / self.grid_snap) * self.grid_snap
 
+    def _get_visual_grid_for_zoom(self) -> int:
+        """Calculate visual grid spacing based on zoom level."""
+        if self.zoom_x < 0.25:
+            return TPQN * 4
+        elif self.zoom_x < 0.4:
+            return TPQN * 2
+        elif self.zoom_x < 0.7:
+            return TPQN
+        elif self.zoom_x < 1.2:
+            return TPQN // 2
+        elif self.zoom_x < 2.0:
+            return TPQN // 4
+        elif self.zoom_x < 3.5:
+            return TPQN // 8
+        else:
+            return TPQN // 16
+
     def _get_grid_spacing(self) -> Tuple[int, int]:
         """Calculate grid spacing based on zoom level."""
-        if self.zoom_x < 0.25:
-            grid_spacing = TPQN * 4
-        elif self.zoom_x < 0.4:
-            grid_spacing = TPQN * 2
-        elif self.zoom_x < 0.7:
-            grid_spacing = TPQN
-        elif self.zoom_x < 1.2:
-            grid_spacing = TPQN // 2
-        elif self.zoom_x < 2.0:
-            grid_spacing = TPQN // 4
-        elif self.zoom_x < 3.5:
-            grid_spacing = TPQN // 8
-        else:
-            grid_spacing = TPQN // 16
+        visual_grid = self._get_visual_grid_for_zoom()
+        triplet_spacing = visual_grid // 3
 
-        self.grid_snap = grid_spacing  # Update snap value
-        triplet_spacing = grid_spacing // 3
-        return grid_spacing, triplet_spacing
+        # Smart snap: use finer of visual grid or selected quantization
+        self.grid_snap = min(visual_grid, self.selected_quantization)
+
+        return visual_grid, triplet_spacing
 
     def _calculate_note_width(self) -> float:
         """Calculate default note width: 2-4x note height based on current grid.
@@ -306,38 +345,84 @@ class PianoRoll:
                     parent=self.drawlist_id
                 )
 
+    def _get_measure_spacing(self, time_signature: Tuple[int, int]) -> int:
+        """Calculate measure spacing in ticks based on time signature."""
+        numerator, denominator = time_signature
+        ticks_per_denominator_note = TPQN * (4 / denominator)
+        measure_ticks = int(numerator * ticks_per_denominator_note)
+        return measure_ticks
+
+    def _get_measure_at_tick(self, tick: float):
+        """Get the measure metadata for a given tick position."""
+        if not self.song or not self.song.measure_metadata:
+            return None
+
+        for measure in self.song.measure_metadata:
+            if measure.start_tick <= tick < measure.start_tick + measure.length_ticks:
+                return measure
+
+        return None
+
+    def _get_time_signature_at_tick(self, tick: float) -> Tuple[int, int]:
+        """Get time signature at a specific tick position."""
+        measure = self._get_measure_at_tick(tick)
+        if measure:
+            return measure.time_signature
+
+        # Fallback to global
+        return self.song.time_signature if self.song else (4, 4)
+
     def _draw_grid_lines(self):
-        """Draw vertical grid lines (thin and muted)."""
+        """Draw vertical grid lines with per-measure time-signature-aware progressive simplification."""
         grid_spacing, triplet_spacing = self._get_grid_spacing()
-        measure_spacing = TPQN * 4
+
+        # Use per-measure metadata if available, otherwise fall back to global
+        if self.song and self.song.measure_metadata:
+            self._draw_grid_lines_per_measure(grid_spacing, triplet_spacing)
+        else:
+            self._draw_grid_lines_global(grid_spacing, triplet_spacing)
+
+    def _draw_grid_lines_global(self, grid_spacing: int, triplet_spacing: int):
+        """Draw grid lines using global time signature (legacy/fallback mode)."""
+        time_signature = self.song.time_signature if self.song else (4, 4)
+        measure_spacing = self._get_measure_spacing(time_signature)
+
+        # Calculate denominator-adjusted visibility thresholds
+        denominator = time_signature[1]
+        denominator_scale = 4.0 / denominator
+
+        SHOW_TRIPLETS_THRESHOLD = 0.25 * denominator_scale
+        SHOW_GRID_THRESHOLD = 0.15 * denominator_scale
 
         # Triplet lines (very faint)
-        for t in range(0, self.song_length_ticks, triplet_spacing):
-            if t % grid_spacing == 0 or t % measure_spacing == 0:
-                continue
-            x, _ = self.get_coords(t, 0)
-            if 0 <= x <= self.width:
-                dpg.draw_line(
-                    (x, 0), (x, self.height),
-                    color=tuple(self.theme.triplet_line_color + [255]),
-                    thickness=self.theme.grid_line_thickness,
-                    parent=self.drawlist_id
-                )
+        if self.zoom_x >= SHOW_TRIPLETS_THRESHOLD:
+            for t in range(0, self.song_length_ticks, triplet_spacing):
+                if t % grid_spacing == 0 or t % measure_spacing == 0:
+                    continue
+                x, _ = self.get_coords(t, 0)
+                if 0 <= x <= self.width:
+                    dpg.draw_line(
+                        (x, 0), (x, self.height),
+                        color=tuple(self.theme.triplet_line_color + [255]),
+                        thickness=self.theme.grid_line_thickness,
+                        parent=self.drawlist_id
+                    )
 
-        # Binary grid lines (muted)
-        for t in range(0, self.song_length_ticks, grid_spacing):
-            if t % measure_spacing == 0:
-                continue
-            x, _ = self.get_coords(t, 0)
-            if 0 <= x <= self.width:
-                dpg.draw_line(
-                    (x, 0), (x, self.height),
-                    color=tuple(self.theme.grid_line_color + [255]),
-                    thickness=self.theme.grid_line_thickness,
-                    parent=self.drawlist_id
-                )
+        # Grid lines (muted)
+        if self.zoom_x >= SHOW_GRID_THRESHOLD:
+            for t in range(0, self.song_length_ticks, grid_spacing):
+                if t % measure_spacing == 0:
+                    continue
+                x, _ = self.get_coords(t, 0)
+                if 0 <= x <= self.width:
+                    dpg.draw_line(
+                        (x, 0), (x, self.height),
+                        color=tuple(self.theme.grid_line_color + [255]),
+                        thickness=self.theme.grid_line_thickness,
+                        parent=self.drawlist_id
+                    )
 
-        # Measure lines (brighter, slightly thicker)
+        # Measure lines (brighter)
         for bar in range(0, self.song_length_ticks // measure_spacing + 1):
             t = bar * measure_spacing
             x, _ = self.get_coords(t, 0)
@@ -348,6 +433,61 @@ class PianoRoll:
                     thickness=2,
                     parent=self.drawlist_id
                 )
+
+    def _draw_grid_lines_per_measure(self, grid_spacing: int, triplet_spacing: int):
+        """Draw grid lines with per-measure time signature awareness."""
+
+        # Draw measure lines and grid/triplet lines for each measure
+        for measure in self.song.measure_metadata:
+            measure_start = measure.start_tick
+            measure_end = measure.start_tick + measure.length_ticks
+
+            # Draw measure line at start
+            x, _ = self.get_coords(measure_start, 0)
+            if 0 <= x <= self.width:
+                dpg.draw_line(
+                    (x, 0), (x, self.height),
+                    color=tuple(self.theme.measure_line_color + [255]),
+                    thickness=2,
+                    parent=self.drawlist_id
+                )
+
+            # Calculate thresholds for this measure's denominator
+            denominator = measure.time_signature[1]
+            denominator_scale = 4.0 / denominator
+
+            SHOW_TRIPLETS_THRESHOLD = 0.25 * denominator_scale
+            SHOW_GRID_THRESHOLD = 0.15 * denominator_scale
+
+            # Draw triplet lines within this measure
+            if self.zoom_x >= SHOW_TRIPLETS_THRESHOLD:
+                t = measure_start
+                while t < measure_end:
+                    if t % grid_spacing != 0 and t != measure_start:
+                        x, _ = self.get_coords(t, 0)
+                        if 0 <= x <= self.width:
+                            dpg.draw_line(
+                                (x, 0), (x, self.height),
+                                color=tuple(self.theme.triplet_line_color + [255]),
+                                thickness=self.theme.grid_line_thickness,
+                                parent=self.drawlist_id
+                            )
+                    t += triplet_spacing
+
+            # Draw grid lines within this measure
+            if self.zoom_x >= SHOW_GRID_THRESHOLD:
+                t = measure_start
+                while t < measure_end:
+                    if t != measure_start:  # Don't overlap measure line
+                        x, _ = self.get_coords(t, 0)
+                        if 0 <= x <= self.width:
+                            dpg.draw_line(
+                                (x, 0), (x, self.height),
+                                color=tuple(self.theme.grid_line_color + [255]),
+                                thickness=self.theme.grid_line_thickness,
+                                parent=self.drawlist_id
+                            )
+                    t += grid_spacing
 
     def _draw_row_dividers(self):
         """Draw horizontal row dividers (drawn AFTER vertical lines to appear on top)."""
@@ -694,14 +834,30 @@ class PianoRoll:
             self.ghost_note = None
             self.draw()
 
-    def zoom_in(self):
-        """Zoom in horizontally."""
-        self.zoom_x = min(self.zoom_x * 1.2, 0.5)  # Max: ~240px per quarter note
+    def zoom_in(self, mouse_x: Optional[float] = None):
+        """Zoom in horizontally (optionally mouse-centered)."""
+        old_zoom = self.zoom_x
+        self.zoom_x = min(self.zoom_x * 1.1, 10.0)  # FIXED: factor 1.1, max 10.0
+
+        # Mouse-centered zoom adjustment
+        if mouse_x is not None:
+            tick_under_mouse = (mouse_x / old_zoom) + self.scroll_x
+            self.scroll_x = tick_under_mouse - (mouse_x / self.zoom_x)
+            self.scroll_x = max(0, self.scroll_x)
+
         self.draw()
 
-    def zoom_out(self):
-        """Zoom out horizontally."""
-        self.zoom_x = max(self.zoom_x / 1.2, 0.01)  # Min: ~5px per quarter note
+    def zoom_out(self, mouse_x: Optional[float] = None):
+        """Zoom out horizontally (optionally mouse-centered)."""
+        old_zoom = self.zoom_x
+        self.zoom_x = max(self.zoom_x / 1.1, 0.1)  # FIXED: factor 1.1, min 0.1
+
+        # Mouse-centered zoom adjustment
+        if mouse_x is not None:
+            tick_under_mouse = (mouse_x / old_zoom) + self.scroll_x
+            self.scroll_x = tick_under_mouse - (mouse_x / self.zoom_x)
+            self.scroll_x = max(0, self.scroll_x)
+
         self.draw()
 
     def zoom_in_vertical(self):
@@ -762,6 +918,12 @@ class PianoRoll:
         """Handle mouse wheel with configurable modifiers."""
         scroll_delta = app_data  # Positive = scroll up, negative = scroll down
 
+        # Get mouse position relative to canvas
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
+        mouse_x = mouse_pos[0] - canvas_rect_min[0]  # Relative X position
+        mouse_y = mouse_pos[1] - canvas_rect_min[1]  # Relative Y position
+
         # Get current modifier states
         shift_held = dpg.is_key_down(dpg.mvKey_Shift)
         ctrl_held = dpg.is_key_down(dpg.mvKey_Control)
@@ -781,9 +943,9 @@ class PianoRoll:
         elif self._check_modifier(settings["horizontal_zoom_modifier"],
                                  shift_held, ctrl_held, alt_held):
             if scroll_delta > 0:
-                self.zoom_in()
+                self.zoom_in(mouse_x=mouse_x)  # Pass mouse position
             else:
-                self.zoom_out()
+                self.zoom_out(mouse_x=mouse_x)  # Pass mouse position
 
         elif self._check_modifier(settings["horizontal_scroll_modifier"],
                                  shift_held, ctrl_held, alt_held):

@@ -36,7 +36,8 @@
 - `core/models.py` - Immutable dataclasses (Note, Track, Song, AppState)
   - Note: position, pitch, duration, velocity
   - Track: name, notes, plugin reference, mute/solo state
-  - Song: tracks collection, tempo (BPM), time signature
+  - Song: tracks collection, tempo (BPM), time signature, **per-measure metadata**
+  - **MeasureMetadata**: Per-measure tempo and time signature (NEW)
   - AppState: current song, selected track, project metadata
 - `core/commands.py` - Command pattern (AddNote, DeleteNote, MoveNote, ResizeNote, etc.)
   - All commands implement execute() and undo() for full undo/redo support
@@ -52,6 +53,8 @@
   - Advances playback position in musical ticks
   - Triggers notes when playhead crosses note positions
   - Based on Blooper4's master clock system
+  - **Supports per-measure tempo changes via MeasureMetadata**
+  - **Tracks both tick position and elapsed wall-clock time**
   - Converts tempo (BPM) and TPQN to sample-accurate timing
 - `audio/engine.py` - Audio processing engine (legacy, currently unused)
 - `audio/dsp.py` - NumPy/Numba DSP utilities
