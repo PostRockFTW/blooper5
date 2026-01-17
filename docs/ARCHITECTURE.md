@@ -1,18 +1,23 @@
 # Blooper5 Architecture
 
-## Recent Changes (2026-01-15)
+## Recent Changes (2026-01-16)
 
-### Refactoring Completed:
-- ✅ Extracted KeyBindingCapture widget from SettingsPage (829 → 661 lines)
-- ✅ Created main.py entry point in root directory
-- ✅ Built complete placeholder structure for all layers
-- ✅ All imports verified, no regressions
+### Core Integration Completed:
+- ✅ Piano Roll fully integrated with AppState and project save/load
+- ✅ Fixed Piano Roll blank-on-first-load bug (initial_load parameter)
+- ✅ Added audio_engine module with NoteScheduler for tick-based playback
+- ✅ Landing Page project launcher with new/open/recent project support
+- ✅ Settings Page with theme customization and keybindings
+- ✅ DAWView main workspace with Piano Roll and mixer integration
+- ✅ Command pattern for undo/redo (AddNoteCommand, DeleteNoteCommand, etc.)
+- ✅ Project persistence (.bloom5 format with MessagePack)
 
-### Placeholder Structure Created:
-- 16 new files created (1,477 lines of scaffolding)
-- All classes have docstrings and type hints
-- All methods raise NotImplementedError with clear signatures
-- Ready for Blooper4 → Blooper5 migration
+### Feature Integration:
+- All core views implemented and functional
+- Piano Roll supports full CRUD operations on notes
+- Track management with plugin assignment
+- Theme system with VS Code-style colors
+- Mouse-based note editing (create, delete, move, resize)
 
 ---
 
@@ -29,15 +34,28 @@
 ### Core Layer (Pure Domain Logic)
 
 - `core/models.py` - Immutable dataclasses (Note, Track, Song, AppState)
-- `core/commands.py` - Command pattern (AddNote, DeleteNote, etc.)
+  - Note: position, pitch, duration, velocity
+  - Track: name, notes, plugin reference, mute/solo state
+  - Song: tracks collection, tempo (BPM), time signature
+  - AppState: current song, selected track, project metadata
+- `core/commands.py` - Command pattern (AddNote, DeleteNote, MoveNote, ResizeNote, etc.)
+  - All commands implement execute() and undo() for full undo/redo support
+  - State changes are immutable - commands create new state objects
 - `core/persistence.py` - Project file I/O (.bloom5 format, MessagePack)
+  - Serialization/deserialization of entire project state
+  - Atomic saves with error handling
 - `core/constants.py` - Musical constants (MIDI note names, scales, BPM ranges)
 
-### Audio Layer (Separate Process)
+### Audio Layer
 
-- `audio/engine.py` - Main audio loop in multiprocessing.Process
+- `audio_engine/scheduler.py` - NoteScheduler for tick-based playback
+  - Advances playback position in musical ticks
+  - Triggers notes when playhead crosses note positions
+  - Based on Blooper4's master clock system
+  - Converts tempo (BPM) and TPQN to sample-accurate timing
+- `audio/engine.py` - Audio processing engine (in development)
 - `audio/mixer.py` - Track mixing, master output
-- `audio/dsp/` - NumPy/Numba oscillators, filters, effects
+- `audio/dsp.py` - NumPy/Numba DSP utilities
 
 ### Plugin Layer
 
@@ -48,18 +66,41 @@
 
 ### UI Layer (DearPyGui IMGUI)
 
-- `ui/widgets/` - Reusable widgets (Button.py, Slider.py, Knob.py, etc.)
-- `ui/views/` - Major views (LandingPage.py, MIDIEditor.py, SoundDesigner.py)
-- `ui/theme.py` - Color palette, fonts, spacing constants
-- `ui/commands/` - UI event → Command bridge
+- `ui/views/` - Major application views
+  - `DAWView.py` - Main DAW workspace with Piano Roll and mixer
+  - `PianoRoll.py` - Piano roll editor with mouse-based note editing
+  - `LandingPage.py` - Project launcher (new/open/recent projects)
+  - `SettingsPage.py` - Theme customization and keybindings
+  - `DrumRoll.py` - Drum sequencer (in development)
+- `ui/widgets/` - Reusable UI components
+  - KeyBindingCapture - Keyboard shortcut capture widget
+  - (Additional widgets as needed)
+- `ui/theme.py` - VS Code-style color palette, fonts, UI scaling
 
 ### Data Flow
 
 ```
-User Click → UI Event → Command → AppState Update → Re-render UI
-                                ↓
-                        Audio Process Queue → Parameter Update
+User Action (Mouse/Keyboard)
+        ↓
+UI Event Handler (PianoRoll, DAWView, etc.)
+        ↓
+Command Creation (AddNoteCommand, DeleteNoteCommand, etc.)
+        ↓
+Command Execution → AppState Update (immutable state change)
+        ↓
+UI Re-render (DearPyGui updates)
+        ↓
+Optional: Project Save → .bloom5 file (MessagePack)
+
+Separate flow:
+AppState → Audio Scheduler → Note Triggering → Plugin Processing → Audio Output
 ```
+
+**Key Characteristics:**
+- **Immutability**: State changes create new objects, old state preserved for undo
+- **Single Source of Truth**: AppState holds all application data
+- **Command Pattern**: All mutations go through commands for undo/redo
+- **Tick-Based Audio**: NoteScheduler advances in musical ticks, not wall-clock time
 
 ## File Organization Rules
 
