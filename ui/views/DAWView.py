@@ -180,7 +180,7 @@ class DAWView:
                         self.piano_roll = PianoRoll(
                             width=self.left_panel_width-10,
                             height=400,
-                            on_notes_changed=self.take_snapshot
+                            on_notes_changed=self._on_piano_roll_notes_changed
                         )
                         self.piano_roll.create_inline(parent="piano_roll_panel")
 
@@ -801,6 +801,14 @@ class DAWView:
 
     # Transport Control Callbacks
 
+    def _on_piano_roll_notes_changed(self):
+        """Called when notes are modified in Piano Roll - save to app_state and take snapshot."""
+        # Take snapshot for undo/redo
+        self.take_snapshot()
+
+        # Save notes to app_state so playback can see the changes
+        self._save_current_track_notes()
+
     def _save_current_track_notes(self):
         """Save current piano roll notes back to the song."""
         song = self.app_state.get_current_song()
@@ -1014,26 +1022,6 @@ class DAWView:
         print("[PLAYBACK WORKER] Starting real-time playback...")
 
         try:
-            # Get ALL notes from ALL tracks in the song
-            song = self.app_state.get_current_song()
-            if not song:
-                print("[PLAYBACK WORKER] No song loaded")
-                return
-
-            # Collect ALL notes from all 16 tracks with track index
-            # We'll check mute/solo dynamically during playback
-            all_notes_with_tracks = []
-            for i, track in enumerate(song.tracks):
-                for note in track.notes:
-                    # Store note with its track index
-                    all_notes_with_tracks.append((note, i))
-
-            if not all_notes_with_tracks:
-                print("[PLAYBACK WORKER] No notes to play")
-                return
-
-            print(f"[PLAYBACK WORKER] Ready to trigger {len(all_notes_with_tracks)} notes from all tracks")
-
             # Create scheduler and set BPM
             scheduler = NoteScheduler(sample_rate=self.sample_rate)
             scheduler.bpm = self.bpm
@@ -1056,6 +1044,19 @@ class DAWView:
                 prev_tick = scheduler.current_tick
                 scheduler.advance(frames)
                 curr_tick = scheduler.current_tick
+
+                # Fetch current notes from app_state (thread-safe read of immutable data)
+                # This allows playback to reflect note edits made during playback
+                song = self.app_state.get_current_song()
+                if not song:
+                    outdata[:] = 0
+                    return
+
+                # Collect ALL notes from all 16 tracks with track index
+                all_notes_with_tracks = []
+                for i, track in enumerate(song.tracks):
+                    for note in track.notes:
+                        all_notes_with_tracks.append((note, i))
 
                 # Check for new note triggers with real-time mute/solo filtering
                 # Check if any track has solo enabled (check in real-time)
