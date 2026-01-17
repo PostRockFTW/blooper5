@@ -72,11 +72,19 @@ class SettingsPage:
                 "play/pause": "Space",  # CHANGED: renamed from "play"
                 "stop": "Escape"
             },
+            "piano_roll": {
+                "vertical_scroll_modifier": "none",
+                "horizontal_scroll_modifier": "shift",
+                "horizontal_zoom_modifier": "ctrl",
+                "vertical_zoom_modifier": "ctrl+shift"
+            },
             "plugins": {
                 "vst_paths": [],
                 "auto_scan": True
             }
         }
+
+        settings_modified = False
 
         if config_path.exists():
             try:
@@ -86,23 +94,46 @@ class SettingsPage:
                     for category in defaults:
                         if category in loaded:
                             defaults[category].update(loaded[category])
+                        elif category == "piano_roll":
+                            # New category added, mark for save
+                            settings_modified = True
 
                     # Migration: Remove old video settings
                     if "video" in loaded:
                         for old_key in ["window_width", "window_height", "fullscreen"]:
-                            defaults["video"].pop(old_key, None)
+                            if old_key in defaults["video"]:
+                                defaults["video"].pop(old_key, None)
+                                settings_modified = True
 
                     # Migration: Rename "play" to "play/pause" in key_bindings
                     if "key_bindings" in loaded:
                         if "play" in loaded["key_bindings"] and "play/pause" not in loaded["key_bindings"]:
                             defaults["key_bindings"]["play/pause"] = loaded["key_bindings"]["play"]
                             defaults["key_bindings"].pop("play", None)
+                            settings_modified = True
+
+                    # Save back if new categories were added
+                    if settings_modified:
+                        try:
+                            with open(config_path, 'w') as f:
+                                json.dump(defaults, f, indent=2)
+                            print("[SETTINGS] Saved new piano_roll settings to file")
+                        except Exception as e:
+                            print(f"Failed to save migrated settings: {e}")
 
                     return defaults
             except Exception as e:
                 print(f"Failed to load settings: {e}")
                 return defaults
         else:
+            # No config file exists, save defaults
+            try:
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(config_path, 'w') as f:
+                    json.dump(defaults, f, indent=2)
+                print("[SETTINGS] Created new settings file with defaults")
+            except Exception as e:
+                print(f"Failed to save default settings: {e}")
             return defaults
 
     def _save_settings(self):
@@ -149,6 +180,8 @@ class SettingsPage:
             self._create_audio_settings()
         elif self.current_category == "MIDI":
             self._create_midi_settings()
+        elif self.current_category == "Piano Roll":
+            self._create_piano_roll_settings()
         elif self.current_category == "Key Bindings":
             self._create_keybindings_settings()
         elif self.current_category == "Plugins":
@@ -386,6 +419,87 @@ class SettingsPage:
                 callback=lambda s, v: self._update_setting("midi", "midi_clock_sync", v)
             )
 
+    def _format_modifier_display(self, modifier: str) -> str:
+        """Format modifier string for display (proper capitalization)."""
+        if modifier == "none":
+            return "None"
+        # Handle compound modifiers like "ctrl+shift"
+        parts = modifier.split('+')
+        return '+'.join(p.capitalize() for p in parts)
+
+    def _create_piano_roll_settings(self):
+        """Create Piano Roll settings fields."""
+        parent = "settings_right_column"
+
+        with dpg.group(tag=self._settings_content_tag, parent=parent):
+            dpg.add_text("PIANO ROLL SETTINGS", color=(100, 150, 200, 255))
+            dpg.add_spacer(height=5)
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
+
+            dpg.add_text("Mouse Wheel Modifiers", color=(200, 200, 200))
+            dpg.add_spacer(height=5)
+            dpg.add_text("Configure which modifier keys control mouse wheel actions:", color=(150, 150, 150))
+            dpg.add_spacer(height=10)
+
+            modifier_options = ["None", "Shift", "Ctrl", "Alt", "Ctrl+Shift", "Ctrl+Alt", "Shift+Alt"]
+
+            # Vertical Scroll
+            dpg.add_text("Vertical Scroll:")
+            dpg.add_combo(
+                items=modifier_options,
+                default_value=self._format_modifier_display(self.settings["piano_roll"]["vertical_scroll_modifier"]),
+                callback=lambda s, v: self._update_setting("piano_roll", "vertical_scroll_modifier", v.lower()),
+                width=200
+            )
+            dpg.add_spacer(height=5)
+
+            # Horizontal Scroll
+            dpg.add_text("Horizontal Scroll:")
+            dpg.add_combo(
+                items=modifier_options,
+                default_value=self._format_modifier_display(self.settings["piano_roll"]["horizontal_scroll_modifier"]),
+                callback=lambda s, v: self._update_setting("piano_roll", "horizontal_scroll_modifier", v.lower()),
+                width=200
+            )
+            dpg.add_spacer(height=5)
+
+            # Horizontal Zoom
+            dpg.add_text("Horizontal Zoom:")
+            dpg.add_combo(
+                items=modifier_options,
+                default_value=self._format_modifier_display(self.settings["piano_roll"]["horizontal_zoom_modifier"]),
+                callback=lambda s, v: self._update_setting("piano_roll", "horizontal_zoom_modifier", v.lower()),
+                width=200
+            )
+            dpg.add_spacer(height=5)
+
+            # Vertical Zoom
+            dpg.add_text("Vertical Zoom:")
+            dpg.add_combo(
+                items=modifier_options,
+                default_value=self._format_modifier_display(self.settings["piano_roll"]["vertical_zoom_modifier"]),
+                callback=lambda s, v: self._update_setting("piano_roll", "vertical_zoom_modifier", v.lower()),
+                width=200
+            )
+
+            dpg.add_spacer(height=15)
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
+            dpg.add_text("Current Mapping:", color=(150, 150, 150))
+            dpg.add_spacer(height=5)
+
+            # Preview of current settings
+            v_scroll = self._format_modifier_display(self.settings['piano_roll']['vertical_scroll_modifier'])
+            h_scroll = self._format_modifier_display(self.settings['piano_roll']['horizontal_scroll_modifier'])
+            h_zoom = self._format_modifier_display(self.settings['piano_roll']['horizontal_zoom_modifier'])
+            v_zoom = self._format_modifier_display(self.settings['piano_roll']['vertical_zoom_modifier'])
+
+            dpg.add_text(f"• Mouse Wheel = {v_scroll if v_scroll != 'None' else 'No modifier'} → Vertical Scroll", color=(200, 200, 200))
+            dpg.add_text(f"• {h_scroll} + Wheel = Horizontal Scroll", color=(200, 200, 200))
+            dpg.add_text(f"• {h_zoom} + Wheel = Horizontal Zoom", color=(200, 200, 200))
+            dpg.add_text(f"• {v_zoom} + Wheel = Vertical Zoom", color=(200, 200, 200))
+
     def _create_keybindings_settings(self):
         """Create Key Bindings settings fields."""
         parent = "settings_right_column"
@@ -444,6 +558,42 @@ class SettingsPage:
                     )
 
                 dpg.add_spacer(height=10)
+
+            dpg.add_spacer(height=20)
+            dpg.add_separator()
+            dpg.add_spacer(height=15)
+
+            # Piano Roll Controls (display only - configured in Piano Roll settings)
+            dpg.add_text("Piano Roll Controls", color=(200, 200, 200))
+            dpg.add_text("(Configure these in Piano Roll settings)", color=(150, 150, 150, 255))
+            dpg.add_spacer(height=10)
+
+            # Get piano roll settings
+            pr_settings = self.settings.get("piano_roll", {
+                "vertical_scroll_modifier": "none",
+                "horizontal_scroll_modifier": "shift",
+                "horizontal_zoom_modifier": "ctrl",
+                "vertical_zoom_modifier": "ctrl+shift"
+            })
+
+            # Display piano roll controls
+            pr_controls = [
+                ("Vertical Scroll", pr_settings.get("vertical_scroll_modifier", "none")),
+                ("Horizontal Scroll", pr_settings.get("horizontal_scroll_modifier", "shift")),
+                ("Horizontal Zoom", pr_settings.get("horizontal_zoom_modifier", "ctrl")),
+                ("Vertical Zoom", pr_settings.get("vertical_zoom_modifier", "ctrl+shift"))
+            ]
+
+            for label, modifier in pr_controls:
+                with dpg.group(horizontal=True):
+                    dpg.add_text(f"{label}:")
+                    dpg.add_spacer(width=20)
+
+                    # Format modifier for display
+                    modifier_display = self._format_modifier_display(modifier) + " + Mouse Wheel"
+                    dpg.add_text(modifier_display, color=(0, 122, 204, 255))
+
+                dpg.add_spacer(height=8)
 
             dpg.add_spacer(height=20)
 
@@ -596,7 +746,7 @@ class SettingsPage:
                 with dpg.group():
                     dpg.add_spacer(width=40)
                     with dpg.group():
-                        categories = ["General", "Video", "Audio", "MIDI", "Key Bindings", "Plugins"]
+                        categories = ["General", "Video", "Audio", "MIDI", "Piano Roll", "Key Bindings", "Plugins"]
 
                         for category in categories:
                             btn_tag = f"category_btn_{category.lower().replace(' ', '_')}"

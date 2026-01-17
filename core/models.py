@@ -224,7 +224,7 @@ class Song:
     time_signature: Tuple[int, int]
     tpqn: int
     tracks: Tuple[Track, ...]
-    length_ticks: int = 1920  # 4 bars at 480 TPQN
+    length_ticks: int = 1920  # 1 bar (4 beats) at 480 TPQN in 4/4 time
     file_path: Optional[str] = None
 
     def __post_init__(self):
