@@ -33,6 +33,18 @@ Files modified:
 - `ui/widgets/PianoRoll.py` - Grid rendering, set_playhead_tick()
 - `ui/views/DAWView.py` - Tempo tracking, BPM display updates
 
+### Unsaved Changes Protection (2026-01-17)
+✅ **IMPLEMENTED**: Unsaved changes warnings when loading projects
+- Dialog prompts appear when loading project with unsaved changes
+- Three options: Save, Don't Save, Cancel
+- Applies to landing page "Load Project" button
+- Applies to clicking recent projects
+- Save As dialog integration for untitled projects
+- Prevents data loss by protecting all load operations
+
+Files modified:
+- `main.py` - Added unsaved checks to on_open_project(), dialog handlers
+
 ## Future Enhancements
 
 ### Audio Pre-buffering '''todo when we start testing fx'''

@@ -24,6 +24,7 @@ Blooper5 is in active development. Core functionality is implemented:
   - Effects: Reverb, Plate Reverb, Space Reverb, Delay, EQ
 - **Audio Engine**: NoteScheduler with tick-based playback (Blooper4-style master clock)
 - **Project Persistence**: Save/load projects in .bloom5 format (MessagePack serialization)
+- **Unsaved Changes Protection**: Automatic warnings when loading/creating projects with unsaved changes
 - **Command Pattern**: Undo/redo support for all state changes
 
 ### Planned
