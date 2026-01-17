@@ -62,13 +62,14 @@ class PianoRoll:
         self.zoom_x = 0.5  # Default zoom shows quarter notes + triplets (quarter note = ~240px)
         self.zoom_y = 1.0  # Vertical zoom scale (0.5 to 3.0)
 
-        # Tool state
+        # Tool state (controlled by external NoteDrawToolbar)
         self.tool = "draw"  # "draw" or "select"
         self.note_mode = "held"  # "held" or "repeat"
 
-        # Note drawing parameters
-        self.current_velocity = 100  # Controlled by velocity slider
+        # Note drawing parameters (controlled by external NoteDrawToolbar)
+        self.current_velocity = 100  # 1-127
         self.grid_snap = TPQN  # Current snap value (1/4 note by default)
+        self.snap_enabled = True  # Grid snapping on/off
         self.note_length_beats = 1.0  # Default note length in beats
 
         # Editing state
@@ -95,6 +96,34 @@ class PianoRoll:
         self.drawlist_id = None
         self.toolbar_window_id = None
         self.color_sidebar_id = None
+
+    def update_toolbar_state(self, toolbar_state: dict):
+        """
+        Update Piano Roll state from external NoteDrawToolbar.
+
+        Args:
+            toolbar_state: Dictionary with keys:
+                - tool: 'draw', 'select', or 'erase'
+                - note_mode: 'held' or 'repeat'
+                - velocity: 1-127
+                - snap_enabled: bool
+                - quantize: '1/4', '1/8', etc.
+        """
+        self.tool = toolbar_state.get('tool', self.tool)
+        self.note_mode = toolbar_state.get('note_mode', self.note_mode)
+        self.current_velocity = toolbar_state.get('velocity', self.current_velocity)
+        self.snap_enabled = toolbar_state.get('snap_enabled', self.snap_enabled)
+
+        # Convert quantize string to TPQN value
+        quantize = toolbar_state.get('quantize', '1/4')
+        quant_map = {
+            '1/4': TPQN,  # Quarter note
+            '1/8': TPQN // 2,  # Eighth note
+            '1/16': TPQN // 4,  # Sixteenth note
+            '1/32': TPQN // 8,  # 32nd note
+            '1/64': TPQN // 16,  # 64th note
+        }
+        self.grid_snap = quant_map.get(quantize, TPQN)
 
     def load_notes(self, notes: List[Note]):
         """
@@ -858,106 +887,7 @@ class PianoRoll:
         self.theme = PianoRollTheme()
         self.draw()
 
-    def _create_toolbar_inline(self):
-        """Create inline toolbar with note controls."""
-        with dpg.child_window(height=120, border=True):
-            with dpg.group(horizontal=True):
-                # Tool selection
-                dpg.add_text("Tool:")
-                dpg.add_radio_button(
-                    items=["Draw (Left-click)", "Select (Right-click always selects)"],
-                    default_value="Draw (Left-click)",
-                    callback=lambda s, v: setattr(self, 'tool', 'draw' if 'Draw' in v else 'select'),
-                    horizontal=True
-                )
-
-            dpg.add_separator()
-
-            with dpg.group(horizontal=True):
-                # Note mode
-                dpg.add_text("Note Mode:")
-                dpg.add_radio_button(
-                    items=["Held Note", "Note Repeat"],
-                    default_value="Held Note",
-                    callback=lambda s, v: setattr(self, 'note_mode', 'held' if 'Held' in v else 'repeat'),
-                    horizontal=True
-                )
-
-            dpg.add_separator()
-
-            with dpg.group(horizontal=True):
-                # Velocity control
-                dpg.add_text("Velocity:")
-                dpg.add_slider_int(
-                    default_value=self.current_velocity,
-                    min_value=1,
-                    max_value=127,
-                    callback=lambda s, v: setattr(self, 'current_velocity', v),
-                    width=200
-                )
-                dpg.add_text("100", tag="velocity_display")
-
-            with dpg.group(horizontal=True):
-                # Note length info
-                dpg.add_text("Note Length:")
-                dpg.add_spacer(width=10)
-                dpg.add_text("Auto (follows grid)", tag="note_length_display", color=(150, 255, 150))
-
-    def _create_toolbar(self):
-        """DEPRECATED: Use _create_toolbar_inline() instead."""
-        pass
-
-    def _create_toolbar_window(self, tag: str = "piano_roll_toolbar"):
-        """Create separate dockable toolbar window for note controls."""
-        with dpg.window(label="Note Controls", tag=tag,
-                       no_close=True,
-                       no_collapse=True,
-                       width=800,
-                       height=140):
-
-            with dpg.group(horizontal=True):
-                # Tool selection
-                dpg.add_text("Tool:")
-                dpg.add_radio_button(
-                    items=["Draw (Left-click)", "Select (Right-click always selects)"],
-                    default_value="Draw (Left-click)",
-                    callback=lambda s, v: setattr(self, 'tool', 'draw' if 'Draw' in v else 'select'),
-                    horizontal=True
-                )
-
-            dpg.add_separator()
-
-            with dpg.group(horizontal=True):
-                # Note mode
-                dpg.add_text("Note Mode:")
-                dpg.add_radio_button(
-                    items=["Held Note", "Note Repeat"],
-                    default_value="Held Note",
-                    callback=lambda s, v: setattr(self, 'note_mode', 'held' if 'Held' in v else 'repeat'),
-                    horizontal=True
-                )
-
-            dpg.add_separator()
-
-            with dpg.group(horizontal=True):
-                # Velocity control
-                dpg.add_text("Velocity:")
-                dpg.add_slider_int(
-                    default_value=self.current_velocity,
-                    min_value=1,
-                    max_value=127,
-                    callback=lambda s, v: setattr(self, 'current_velocity', v),
-                    width=200
-                )
-                dpg.add_text("100", tag="velocity_display")
-
-            with dpg.group(horizontal=True):
-                # Note length info
-                dpg.add_text("Note Length:")
-                dpg.add_spacer(width=10)
-                dpg.add_text("Auto (follows grid)", tag="note_length_display", color=(150, 255, 150))
-
-        self.toolbar_window_id = tag
+    # Toolbar methods removed - use external NoteDrawToolbar widget instead
 
     def create_inline(self, parent=None):
         """
@@ -993,11 +923,13 @@ class PianoRoll:
 
     def create_dockable(self, tag: str = "piano_roll_window", toolbar_tag: str = "piano_roll_toolbar", parent_docking_space=None):
         """
-        Create dockable Piano Roll window (no theme controls - see Settings).
+        DEPRECATED: Use create_inline() instead. Toolbar is now a separate NoteDrawToolbar widget.
+
+        Create dockable Piano Roll window.
 
         Args:
             tag: Tag for Piano Roll window
-            toolbar_tag: Tag for separate toolbar window
+            toolbar_tag: (DEPRECATED - toolbar is now separate widget)
             parent_docking_space: Parent docking space (optional)
         """
         # Create main Piano Roll window
@@ -1029,8 +961,7 @@ class PianoRoll:
 
         self.window_id = tag
 
-        # Create separate dockable toolbar window
-        self._create_toolbar_window(toolbar_tag)
+        # NOTE: Toolbar is now a separate NoteDrawToolbar widget created by DAWView
 
         # Initial draw
         self.draw()

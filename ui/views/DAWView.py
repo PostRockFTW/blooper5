@@ -18,6 +18,7 @@ import dataclasses
 import math
 from ui.widgets.MixerStrip import MixerStrip
 from ui.widgets.PianoRoll import PianoRoll
+from ui.widgets.NoteDrawToolbar import NoteDrawToolbar
 from plugins.sources.dual_osc import DualOscillator
 from plugins.base import ProcessContext
 from core.models import Note, AppState
@@ -100,6 +101,7 @@ class DAWView:
 
         # Sub-widgets (will be initialized in create())
         self.piano_roll = None
+        self.note_draw_toolbar = None
         self.sound_designer = None
         self.mixer_strips = []  # 17 MixerStrip instances
 
@@ -642,64 +644,18 @@ class DAWView:
             traceback.print_exc()
 
     def _create_note_controls(self):
-        """Create inline note controls toolbar."""
-        dpg.add_spacer(height=10)
+        """Create note drawing toolbar using NoteDrawToolbar widget."""
+        self.note_draw_toolbar = NoteDrawToolbar(
+            width=self.left_panel_width - 20,
+            height=self.note_controls_height,
+            on_state_changed=self._on_toolbar_state_changed
+        )
+        self.note_draw_toolbar.create_inline(parent="note_controls_panel")
 
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=10)
-            # Tool selection
-            dpg.add_text("Tool:")
-            dpg.add_radio_button(
-                items=["Draw", "Select"],
-                default_value="Draw",
-                horizontal=True,
-                callback=self._on_tool_change,
-                tag="tool_selector"
-            )
-
-        dpg.add_spacer(height=10)
-
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=10)
-            # Note mode
-            dpg.add_text("Note Mode:")
-            dpg.add_radio_button(
-                items=["Held Note", "Note Repeat"],
-                default_value="Held Note",
-                horizontal=True,
-                callback=self._on_note_mode_change,
-                tag="note_mode_selector"
-            )
-
-        dpg.add_spacer(height=10)
-
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=10)
-            # Velocity control
-            dpg.add_text("Velocity:")
-            dpg.add_slider_int(
-                default_value=100,
-                min_value=1,
-                max_value=127,
-                width=200,
-                callback=self._on_velocity_change,
-                tag="velocity_slider"
-            )
-
-    def _on_tool_change(self, sender, value):
-        """Handle tool selection change."""
+    def _on_toolbar_state_changed(self, toolbar_state: dict):
+        """Handle toolbar state changes - update Piano Roll."""
         if self.piano_roll:
-            self.piano_roll.tool = 'draw' if value == 'Draw' else 'select'
-
-    def _on_note_mode_change(self, sender, value):
-        """Handle note mode change."""
-        if self.piano_roll:
-            self.piano_roll.note_mode = 'held' if 'Held' in value else 'repeat'
-
-    def _on_velocity_change(self, sender, value):
-        """Handle velocity slider change."""
-        if self.piano_roll:
-            self.piano_roll.current_velocity = value
+            self.piano_roll.update_toolbar_state(toolbar_state)
 
     def _create_transport_controls(self):
         """Create play, stop, record, BPM, time position controls."""

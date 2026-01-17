@@ -1,3 +1,33 @@
- Issue 1: How about we consider a hybrid option and pre-buffer playback by an adjustable amount to give audio time to process before it is played, or am I missing the neuance of how blooper5 was supposed to work? 
+# Blooper5 Issues and Questions
 
- Issue 2: As far as I can remember, blooper4 had a valid layout for vertical lines with regard to zooming. The theory was that each measure was broken up by beats (4 1/4 note beats per measure as a standard, but this will need to be changable over the coarse of a song for different time signature changes) these beats were subdivided by 2 triplet lines. if zoomed in, these triplet lines dissapear and beats are cut in half (IE 8 x 1/8 notes) and these new, shorter beat units were subdivided by 2 triplet line. this pattern continued as you zoomed in for 1/6th notes, 32nd notes, 64th notes, and 128th notes.zooming out past 4 1/4 notes per measure should initially make triplet lines dissapear, and eventually make beat lines dissapear leaving only measures. that should be the furthest out zoom option with 1/4 note and triplet lines bening the default zoom level. 
+## Completed
+
+### Architecture Refactoring (2026-01-16)
+✅ **FIXED**: Consolidated audio/ and audio_engine/ folders - merged into single audio/ folder
+✅ **FIXED**: Deleted unused audio/mixer.py placeholder
+✅ **FIXED**: Moved PianoRoll, DrumRoll, PluginRack from views/ to widgets/
+✅ **FIXED**: Views now contain only full-page contexts (DAWView, LandingPage, SettingsPage)
+✅ **FIXED**: Widgets now contain reusable components (PianoRoll, NoteDrawToolbar, MixerStrip, etc.)
+✅ **FIXED**: Extracted note drawing toolbar from Piano Roll into separate NoteDrawToolbar widget
+✅ **FIXED**: Toolbar now includes quantization, snap toggle, and other features from Blooper4
+
+## Future Enhancements
+
+### Audio Pre-buffering
+Consider adding hybrid pre-buffering system:
+- Pre-render notes before playback starts to prevent glitches
+- Buffer ahead during playback for smooth real-time playback
+- Adjustable buffer size for performance tuning
+
+### Piano Roll Grid Zoom
+Implement Blooper4's hierarchical zoom system:
+- Zoom levels: Measure only → Measure+Beat → Beat+Triplets → Subdivisions
+- Dynamic grid line visibility based on zoom level
+- Mouse wheel zoom controls
+- Grid snapping respects current zoom level
+
+### Note Drawing Enhancements
+- Add N-Tuplet support (custom tuplet divisions)
+- Add bar length controls (+/- buttons)
+- Visual feedback for current quantization setting
+- Keyboard shortcuts for tool switching
