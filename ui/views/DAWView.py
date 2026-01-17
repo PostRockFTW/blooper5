@@ -17,11 +17,11 @@ import time
 import dataclasses
 import math
 from ui.widgets.MixerStrip import MixerStrip
-from ui.views.PianoRoll import PianoRoll
+from ui.widgets.PianoRoll import PianoRoll
 from plugins.sources.dual_osc import DualOscillator
 from plugins.base import ProcessContext
 from core.models import Note, AppState
-from audio_engine.scheduler import NoteScheduler
+from audio.scheduler import NoteScheduler
 
 
 class DAWView:

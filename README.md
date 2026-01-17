@@ -91,18 +91,20 @@ blooper5/
 │   ├── persistence.py     # Project file I/O
 │   └── constants.py       # Musical constants
 ├── ui/                     # User interface
-│   ├── views/             # Main application views
+│   ├── views/             # Full-page application contexts
 │   │   ├── DAWView.py     # Main DAW workspace
-│   │   ├── PianoRoll.py   # Piano roll editor
 │   │   ├── LandingPage.py # Project launcher
 │   │   └── SettingsPage.py # Settings and preferences
 │   ├── widgets/           # Reusable UI components
+│   │   ├── PianoRoll.py   # Piano roll editor
+│   │   ├── DrumRoll.py    # Drum sequencer
+│   │   ├── PluginRack.py  # Plugin UI container
+│   │   ├── MixerStrip.py  # Mixer channel strip
+│   │   └── KeyBindingCapture.py # Keybinding widget
 │   └── theme.py           # Visual styling
-├── audio/                  # Audio processing (legacy)
-│   ├── engine.py          # Audio engine
-│   ├── mixer.py           # Track mixer
-│   └── dsp.py             # DSP utilities
-├── audio_engine/          # New audio engine
+├── audio/                  # Audio processing
+│   ├── engine.py          # Audio engine (legacy, unused)
+│   ├── dsp.py             # DSP utilities
 │   └── scheduler.py       # Tick-based note scheduler
 ├── plugins/               # Plugin system
 │   ├── base.py            # Plugin base classes

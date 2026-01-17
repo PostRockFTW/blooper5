@@ -1,6 +1,9 @@
 """
 Main audio engine using multiprocessing with plugin integration.
 
+NOTE: This file is currently UNUSED. Audio playback is handled by DAWView._playback_worker.
+This is legacy code that may be refactored/removed in the future.
+
 Architecture:
 - UI process: Main thread with DearPyGui
 - Audio process: Separate process for low-latency audio
@@ -14,7 +17,6 @@ import sounddevice as sd
 import numpy as np
 import time
 
-from audio.mixer import Mixer
 from plugins.registry import PluginRegistry
 from plugins.base import ProcessContext, AudioProcessor
 from core.models import Song, Track, Note
@@ -224,9 +226,6 @@ def _audio_process_loop(
     """
     # Initialize plugin registry
     plugin_registry = PluginRegistry()
-
-    # Initialize mixer
-    mixer = Mixer()
 
     # Audio state
     is_playing = False

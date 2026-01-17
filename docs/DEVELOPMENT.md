@@ -60,19 +60,20 @@ blooper5/
 │   ├── persistence.py     # Project file I/O
 │   └── constants.py       # Musical constants
 ├── ui/                     # User interface layer
-│   ├── views/             # Application views
+│   ├── views/             # Full-page application contexts
 │   │   ├── DAWView.py     # Main workspace
-│   │   ├── PianoRoll.py   # Piano roll editor
 │   │   ├── LandingPage.py # Project launcher
-│   │   ├── SettingsPage.py # Settings
-│   │   └── DrumRoll.py    # Drum sequencer (WIP)
+│   │   └── SettingsPage.py # Settings
 │   ├── widgets/           # Reusable UI components
+│   │   ├── PianoRoll.py   # Piano roll editor
+│   │   ├── DrumRoll.py    # Drum sequencer (WIP)
+│   │   ├── PluginRack.py  # Plugin UI container
+│   │   ├── MixerStrip.py  # Mixer channel strip
+│   │   └── KeyBindingCapture.py # Keybinding widget
 │   └── theme.py           # Theming and styling
-├── audio/                  # Audio processing (legacy)
-│   ├── engine.py          # Audio engine
-│   ├── mixer.py           # Track mixing
-│   └── dsp.py             # DSP utilities
-├── audio_engine/          # New audio engine
+├── audio/                  # Audio processing
+│   ├── engine.py          # Audio engine (legacy, unused)
+│   ├── dsp.py             # DSP utilities
 │   └── scheduler.py       # Tick-based scheduler
 ├── plugins/               # Plugin system
 │   ├── base.py            # Base classes (AudioProcessor, etc.)

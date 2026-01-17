@@ -48,14 +48,15 @@
 
 ### Audio Layer
 
-- `audio_engine/scheduler.py` - NoteScheduler for tick-based playback
+- `audio/scheduler.py` - NoteScheduler for tick-based playback
   - Advances playback position in musical ticks
   - Triggers notes when playhead crosses note positions
   - Based on Blooper4's master clock system
   - Converts tempo (BPM) and TPQN to sample-accurate timing
-- `audio/engine.py` - Audio processing engine (in development)
-- `audio/mixer.py` - Track mixing, master output
+- `audio/engine.py` - Audio processing engine (legacy, currently unused)
 - `audio/dsp.py` - NumPy/Numba DSP utilities
+
+**Note**: Current audio playback is handled by `DAWView._playback_worker()` with real-time note triggering.
 
 ### Plugin Layer
 
@@ -66,15 +67,16 @@
 
 ### UI Layer (DearPyGui IMGUI)
 
-- `ui/views/` - Major application views
-  - `DAWView.py` - Main DAW workspace with Piano Roll and mixer
-  - `PianoRoll.py` - Piano roll editor with mouse-based note editing
+- `ui/views/` - Full-page application contexts
+  - `DAWView.py` - Main DAW workspace (integrates Piano Roll and mixer)
   - `LandingPage.py` - Project launcher (new/open/recent projects)
   - `SettingsPage.py` - Theme customization and keybindings
-  - `DrumRoll.py` - Drum sequencer (in development)
 - `ui/widgets/` - Reusable UI components
-  - KeyBindingCapture - Keyboard shortcut capture widget
-  - (Additional widgets as needed)
+  - `PianoRoll.py` - Piano roll editor with mouse-based note editing
+  - `DrumRoll.py` - Drum sequencer (in development)
+  - `PluginRack.py` - Plugin UI container
+  - `MixerStrip.py` - Single mixer channel strip with volume/pan/mute/solo
+  - `KeyBindingCapture.py` - Keyboard shortcut capture widget
 - `ui/theme.py` - VS Code-style color palette, fonts, UI scaling
 
 ### Data Flow
