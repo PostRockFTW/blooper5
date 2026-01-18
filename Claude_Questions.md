@@ -45,6 +45,23 @@ Files modified:
 Files modified:
 - `main.py` - Added unsaved checks to on_open_project(), dialog handlers
 
+### PianoRoll Multi-Measure Editing (2026-01-18)
+✅ **FIXED**: PianoRoll only editable in first measure
+- Root cause: `song_length_ticks` hardcoded to 1920 ticks (1 bar) at initialization
+- Grid lines, note rendering, and interactions were all bounded by this hardcoded value
+- Solution: Update `song_length_ticks = song.length_ticks` when loading tracks
+- Now properly supports multi-measure editing, bar addition, and project loading
+
+Files modified:
+- `ui/widgets/PianoRoll.py:300-301` - Added song_length_ticks update in load_track_notes()
+
+Impact:
+- ✅ Grid lines render for all measures
+- ✅ Notes visible in all measures
+- ✅ Can draw notes in any measure
+- ✅ Add Bar After/Before creates editable bars
+- ✅ Multi-measure projects load correctly
+
 ## Future Enhancements
 
 ### Audio Pre-buffering '''todo when we start testing fx'''

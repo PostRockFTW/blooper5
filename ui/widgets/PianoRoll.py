@@ -70,6 +70,7 @@ class PianoRoll:
 
         # Note drawing parameters (controlled by external NoteDrawToolbar)
         self.current_velocity = 100  # 1-127
+        self.current_release_velocity = 64  # 0-127
         self.grid_snap = TPQN  # Current snap value (1/4 note by default)
         self.selected_quantization = TPQN  # Selected quantization from toolbar
         self.snap_enabled = True  # Grid snapping on/off
@@ -80,6 +81,25 @@ class PianoRoll:
         self.drag_start_pos: Optional[Tuple[int, int]] = None
         self.ghost_note: Optional[Dict[str, Any]] = None
         self.selected_notes: List[Note] = []
+
+        # Auto-resize tracking
+        self._last_container_size = (0, 0)
+
+        # Drawing drag state
+        self.is_drawing_drag = False
+        self.draw_drag_start_tick: Optional[int] = None
+        self.draw_drag_start_pitch: Optional[int] = None
+        self.draw_drag_notes: List[Note] = []  # Notes created during current drag
+
+        # Erasing drag state
+        self.is_erasing_drag = False
+        self.erased_notes: set = set()  # Track note indices already erased
+
+        # Bar selection state (for BarEditToolbar)
+        self.bar_selection_mode = False
+        self.selected_bar_start = None  # Bar index (0-based)
+        self.selected_bar_end = None    # Bar index (inclusive, 0-based)
+        self.on_bar_selection_changed = None  # Callback to notify toolbar
 
         # Playback
         self.current_tick = 0
@@ -115,22 +135,118 @@ class PianoRoll:
         self.tool = toolbar_state.get('tool', self.tool)
         self.note_mode = toolbar_state.get('note_mode', self.note_mode)
         self.current_velocity = toolbar_state.get('velocity', self.current_velocity)
+        self.current_release_velocity = toolbar_state.get('release_velocity', self.current_release_velocity)
         self.snap_enabled = toolbar_state.get('snap_enabled', self.snap_enabled)
 
         # Store selected quantization from toolbar
         quantize = toolbar_state.get('quantize', '1/4')
         quant_map = {
+            # Straight notes
             '1/4': TPQN,  # Quarter note
             '1/8': TPQN // 2,  # Eighth note
             '1/16': TPQN // 4,  # Sixteenth note
             '1/32': TPQN // 8,  # 32nd note
             '1/64': TPQN // 16,  # 64th note
+            '1/128': TPQN // 32,  # 128th note
+            # Triplets
+            '1/4T': TPQN * 2 // 3,  # Quarter note triplet (320 ticks)
+            '1/8T': TPQN // 3,  # Eighth note triplet (160 ticks)
+            '1/16T': TPQN // 6,  # Sixteenth note triplet (80 ticks)
+            '1/32T': TPQN // 12,  # 32nd note triplet (40 ticks)
+            '1/64T': TPQN // 24,  # 64th note triplet (20 ticks)
+            '1/128T': TPQN // 48,  # 128th note triplet (10 ticks)
         }
         self.selected_quantization = quant_map.get(quantize, TPQN)
 
         # Update grid_snap using smart snap logic
         visual_grid = self._get_visual_grid_for_zoom()
         self.grid_snap = min(visual_grid, self.selected_quantization)
+
+    def update_bar_edit_state(self, toolbar_state: dict):
+        """
+        Update Piano Roll state from external BarEditToolbar.
+
+        Args:
+            toolbar_state: Dictionary with keys:
+                - selection_mode_enabled: bool
+                - selected_bar_start: int or None
+                - selected_bar_end: int or None
+        """
+        self.bar_selection_mode = toolbar_state.get('selection_mode_enabled', False)
+        self.selected_bar_start = toolbar_state.get('selected_bar_start')
+        self.selected_bar_end = toolbar_state.get('selected_bar_end')
+        self.draw()  # Redraw to show selection highlight
+
+    def _get_bar_at_tick(self, tick: float) -> int:
+        """
+        Get bar/measure index at tick position.
+
+        Args:
+            tick: Tick position
+
+        Returns:
+            Bar index (0-based)
+        """
+        if not self.song or not self.song.measure_metadata:
+            # Fallback: use global time signature
+            time_signature = self.song.time_signature if self.song else (4, 4)
+            measure_spacing = self._get_measure_spacing(time_signature)
+            return int(tick / measure_spacing)
+
+        # Use measure_metadata for accurate bar boundaries
+        for i, measure in enumerate(self.song.measure_metadata):
+            if measure.start_tick <= tick < measure.start_tick + measure.length_ticks:
+                return i
+
+        # If tick is beyond last measure, return last measure index
+        if self.song.measure_metadata:
+            return len(self.song.measure_metadata) - 1
+        return 0
+
+    def _get_bar_tick_range(self, bar_index: int) -> Tuple[int, int]:
+        """
+        Get start and end ticks for a bar.
+
+        Args:
+            bar_index: Bar index (0-based)
+
+        Returns:
+            Tuple of (start_tick, end_tick)
+        """
+        if not self.song or not self.song.measure_metadata:
+            # Fallback: use global time signature
+            time_signature = self.song.time_signature if self.song else (4, 4)
+            measure_spacing = self._get_measure_spacing(time_signature)
+            start_tick = bar_index * measure_spacing
+            end_tick = (bar_index + 1) * measure_spacing
+            return start_tick, end_tick
+
+        if 0 <= bar_index < len(self.song.measure_metadata):
+            measure = self.song.measure_metadata[bar_index]
+            return measure.start_tick, measure.start_tick + measure.length_ticks
+
+        return 0, 0
+
+    def _handle_bar_selection_click(self, mouse_x: float, mouse_y: float):
+        """
+        Handle click in bar selection mode.
+
+        Args:
+            mouse_x: Mouse X position (canvas-relative)
+            mouse_y: Mouse Y position (canvas-relative)
+        """
+        tick = self.get_tick_at(mouse_x)
+        clicked_bar = self._get_bar_at_tick(tick)
+
+        # Update selection
+        self.selected_bar_start = clicked_bar
+        self.selected_bar_end = clicked_bar
+
+        # Notify toolbar via callback
+        if self.on_bar_selection_changed:
+            self.on_bar_selection_changed(clicked_bar, clicked_bar)
+
+        self.draw()
 
     def load_notes(self, notes: List[Note]):
         """
@@ -181,6 +297,8 @@ class PianoRoll:
         # Update song reference if provided
         if song is not None:
             self.song = song
+            # FIX: Update song length to match the actual song
+            self.song_length_ticks = song.length_ticks
 
         if self.is_arrangement_view:
             self.all_tracks_data = all_tracks_data or []
@@ -243,6 +361,14 @@ class PianoRoll:
         y = (127 - pitch) * GRID_HEIGHT * self.zoom_y - self.scroll_y
         return x, y
 
+    def update(self):
+        """Update piano roll (called every frame by DAWView)."""
+        # Check if container size changed and redraw if needed
+        current_size = self._get_canvas_size()
+        if current_size != self._last_container_size:
+            self._last_container_size = current_size
+            self.draw()
+
     def get_pitch_at(self, y: float) -> int:
         """Convert screen Y coordinate to MIDI pitch."""
         relative_y = y + self.scroll_y
@@ -255,8 +381,9 @@ class PianoRoll:
         return max(0.0, tick)
 
     def snap_to_grid(self, tick: float) -> float:
-        """Snap tick value to current grid."""
-        return round(tick / self.grid_snap) * self.grid_snap
+        """Snap tick value to current grid (snaps to left grid line)."""
+        import math
+        return math.floor(tick / self.grid_snap) * self.grid_snap
 
     def _get_visual_grid_for_zoom(self) -> int:
         """Calculate visual grid spacing based on zoom level."""
@@ -306,10 +433,28 @@ class PianoRoll:
 
         return duration_ticks
 
+    def _get_canvas_size(self) -> Tuple[int, int]:
+        """Get current canvas size from container (for auto-resize support)."""
+        if hasattr(self, '_canvas_container') and dpg.does_item_exist(self._canvas_container):
+            rect = dpg.get_item_rect_size(self._canvas_container)
+            if rect[0] > 0 and rect[1] > 0:  # Valid size
+                return int(rect[0]), int(rect[1])
+        return self.width, self.height
+
     def draw(self):
         """Main draw function."""
         if not self.drawlist_id:
             return
+
+        # Get current canvas size from container (for auto-resize support)
+        new_width, new_height = self._get_canvas_size()
+
+        # Resize canvas if container size changed
+        if new_width != self.width or new_height != self.height:
+            self.width = new_width
+            self.height = new_height
+            if dpg.does_item_exist(self.canvas_id):
+                dpg.configure_item(self.canvas_id, width=self.width, height=self.height)
 
         dpg.delete_item(self.drawlist_id, children_only=True)
 
@@ -324,6 +469,7 @@ class PianoRoll:
         self._draw_grid_lines()
         self._draw_row_dividers()
         self._draw_notes()
+        self._draw_bar_selection_highlight()  # Draw bar selection highlight
         self._draw_ghost_note()
         self._draw_playhead()
 
@@ -554,8 +700,13 @@ class PianoRoll:
             if ny + row_h < 0 or ny > self.height:
                 continue
 
+            # Calculate visible portion of note
             visible_x = max(0, nx)
-            visible_width = min(nw, self.width - visible_x)
+            if nx < 0:
+                # Note extends past left edge - adjust width to show only visible portion
+                visible_width = min(nw + nx, self.width)  # nw + nx because nx is negative
+            else:
+                visible_width = min(nw, self.width - visible_x)
 
             # Determine color
             if use_octave_colors:
@@ -614,31 +765,82 @@ class PianoRoll:
                     parent=self.drawlist_id
                 )
 
-            # Velocity indicator (vertical bar on right side)
-            # Height of bar represents velocity (0-127 mapped to note height)
+            # Initial velocity indicator (vertical bar on LEFT side)
             vel_bar_width = 4  # Pixels wide
             vel_ratio = note.velocity / 127.0  # 0.0 to 1.0
             vel_bar_height = row_h * vel_ratio  # Height based on velocity
 
-            # Position on right side of note
-            vel_x_right = visible_x + visible_width - vel_bar_width - 1
+            # Position on LEFT side of note
+            vel_x_left = visible_x + 1
             vel_y_bottom = ny + row_h - 2  # Bottom of note
             vel_y_top = vel_y_bottom - vel_bar_height  # Top of velocity bar
 
             # Color: brighter version of note color
             vel_color = tuple([min(c + 60, 255) for c in note_color] + [220])
 
-            # Only draw if bar is visible and has width
+            # Draw left (initial) velocity bar
             if vel_bar_width > 0 and vel_bar_height > 1:
                 dpg.draw_rectangle(
-                    (vel_x_right, vel_y_top),
-                    (vel_x_right + vel_bar_width, vel_y_bottom),
+                    (vel_x_left, vel_y_top),
+                    (vel_x_left + vel_bar_width, vel_y_bottom),
                     fill=vel_color,
                     color=vel_color,
                     parent=self.drawlist_id
                 )
 
+            # Release velocity indicator (vertical bar on RIGHT side)
+            rel_vel_ratio = note.release_velocity / 127.0
+            rel_vel_bar_height = row_h * rel_vel_ratio
+
+            # Position on RIGHT side of note
+            rel_vel_x_right = visible_x + visible_width - vel_bar_width - 1
+            rel_vel_y_bottom = ny + row_h - 2
+            rel_vel_y_top = rel_vel_y_bottom - rel_vel_bar_height
+
+            # Use same color scheme for consistency
+            rel_vel_color = tuple([min(c + 60, 255) for c in note_color] + [220])
+
+            # Draw right (release) velocity bar
+            if vel_bar_width > 0 and rel_vel_bar_height > 1:
+                dpg.draw_rectangle(
+                    (rel_vel_x_right, rel_vel_y_top),
+                    (rel_vel_x_right + vel_bar_width, rel_vel_y_bottom),
+                    fill=rel_vel_color,
+                    color=rel_vel_color,
+                    parent=self.drawlist_id
+                )
+
             notes_drawn += 1
+
+    def _draw_bar_selection_highlight(self):
+        """Draw semi-transparent highlight over selected bars."""
+        if self.selected_bar_start is None:
+            return
+
+        start_bar = self.selected_bar_start
+        end_bar = self.selected_bar_end if self.selected_bar_end is not None else start_bar
+
+        # Draw highlight for each bar in selection
+        for bar_index in range(start_bar, end_bar + 1):
+            start_tick, end_tick = self._get_bar_tick_range(bar_index)
+
+            x_start, _ = self.get_coords(start_tick, 0)
+            x_end, _ = self.get_coords(end_tick, 0)
+
+            # Clip to viewport
+            visible_x_start = max(0, x_start)
+            visible_x_end = min(self.width, x_end)
+
+            if visible_x_start < visible_x_end:
+                # Draw semi-transparent overlay
+                dpg.draw_rectangle(
+                    (visible_x_start, 0),
+                    (visible_x_end, self.height),
+                    fill=(100, 150, 255, 50),  # Light blue, semi-transparent
+                    color=(100, 150, 255, 150),  # Border
+                    thickness=2,
+                    parent=self.drawlist_id
+                )
 
     def _draw_ghost_note(self):
         """Draw preview note during drawing."""
@@ -697,10 +899,28 @@ class PianoRoll:
                 )
 
     def _handle_canvas_click(self, sender, app_data):
-        """Handle left-click on canvas (draw mode): delete if note exists, otherwise draw new note."""
-        if self.tool != "draw":
+        """Route left-click to appropriate handler based on current tool."""
+        # Check for bar selection mode first (takes priority over other tools)
+        if self.bar_selection_mode:
+            # Get mouse position
+            mouse_pos = dpg.get_mouse_pos(local=False)
+            canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
+            mouse_x = mouse_pos[0] - canvas_rect_min[0]
+            mouse_y = mouse_pos[1] - canvas_rect_min[1]
+
+            self._handle_bar_selection_click(mouse_x, mouse_y)
             return
 
+        # Normal tool routing
+        if self.tool == "draw":
+            self._handle_draw_click(sender, app_data)
+        elif self.tool == "erase":
+            self._handle_erase_click(sender, app_data)
+        elif self.tool == "select":
+            self._handle_select_click(sender, app_data)
+
+    def _handle_draw_click(self, sender, app_data):
+        """Handle left-click in draw mode - Blooper4-style toggle (delete if exists, create if not)."""
         # Get mouse position from DearPyGui
         mouse_pos = dpg.get_mouse_pos(local=False)
         canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
@@ -711,42 +931,72 @@ class PianoRoll:
         # Convert to pitch and tick
         pitch = self.get_pitch_at(mouse_y)
         tick = self.get_tick_at(mouse_x)
-        snapped_tick = self.snap_to_grid(tick)
+        # Only snap if snap is enabled
+        snapped_tick = self.snap_to_grid(tick) if self.snap_enabled else tick
 
-        # Check if a note already exists at this position
+        # Check if a note already exists at this position (Blooper4-style toggle)
         for i, note in enumerate(self.notes):
             note_start_tick = note.start * TPQN
             note_end_tick = note_start_tick + (note.duration * TPQN)
 
             if (note.note == pitch and
                 note_start_tick <= tick <= note_end_tick):
-                # Note exists at this position - DELETE IT
-                # Take snapshot before modifying (for undo)
-                if self.on_notes_changed:
-                    self.on_notes_changed()
+                # Note exists - START ERASE DRAG (allows dragging to delete multiple notes)
+                self.is_erasing_drag = True
+                self.erased_notes = set()
 
-                self.notes.pop(i)
-                self.draw()
+                # Delete the clicked note
+                self._erase_note_at_position(mouse_x, mouse_y)
                 return
 
-        # No note at this position - CREATE NEW NOTE
-        # Calculate note duration based on current grid
-        duration_ticks = self._calculate_note_width()
+        # No note at this position - START DRAWING DRAG
+        # Start drawing drag
+        self.is_drawing_drag = True
+        self.draw_drag_start_tick = int(snapped_tick)
+        self.draw_drag_start_pitch = pitch
+        self.draw_drag_notes = []
+
+        # Create initial note (in case user doesn't drag)
+        duration_ticks = self.selected_quantization
 
         new_note = Note(
             note=pitch,
             start=snapped_tick / TPQN,
-            duration=self.note_length_beats,
+            duration=duration_ticks / TPQN,  # Convert ticks to beats
             velocity=self.current_velocity,
+            release_velocity=self.current_release_velocity,
             selected=False
         )
+
+        self.draw_drag_notes.append(new_note)
+        self.notes.append(new_note)
+        self.draw()
+
+    def _handle_erase_click(self, sender, app_data):
+        """Handle left-click in erase mode - start erase drag."""
+        # Get mouse position from DearPyGui
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
+
+        mouse_x = mouse_pos[0] - canvas_rect_min[0]
+        mouse_y = mouse_pos[1] - canvas_rect_min[1]
+
+        # Start erase drag
+        self.is_erasing_drag = True
+        self.erased_notes = set()
 
         # Take snapshot before modifying (for undo)
         if self.on_notes_changed:
             self.on_notes_changed()
 
-        self.notes.append(new_note)
-        self.draw()
+        # Erase note at click position
+        self._erase_note_at_position(mouse_x, mouse_y)
+
+    def _handle_select_click(self, sender, app_data):
+        """Handle left-click in select mode: box selection (placeholder for future)."""
+        # Placeholder for future box selection implementation
+        # For now, do nothing (right-click still works for selection)
+        pass
 
     def _handle_canvas_right_click(self, sender, app_data):
         """Handle right-click on canvas (select mode)."""
@@ -772,6 +1022,188 @@ class PianoRoll:
                 self.notes[i] = replace(note, selected=not note.selected)
                 self.draw()
                 return
+
+    def _handle_mouse_move(self, sender, app_data):
+        """Handle mouse move - update drawing or erasing drag if active."""
+        if self.is_drawing_drag:
+            # Check if left mouse button is still held
+            if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
+                self._finish_drawing_drag()
+                return
+
+            # Get current mouse position
+            mouse_pos = dpg.get_mouse_pos(local=False)
+            canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
+            mouse_x = mouse_pos[0] - canvas_rect_min[0]
+            mouse_y = mouse_pos[1] - canvas_rect_min[1]
+
+            # Convert to musical coordinates
+            current_pitch = self.get_pitch_at(mouse_y)
+            current_tick = self.get_tick_at(mouse_x)
+            snapped_tick = self.snap_to_grid(current_tick)
+
+            # Get note mode from toolbar
+            if self.note_mode == "held":
+                # HELD NOTE MODE: Stretch existing note
+                self._update_held_note_drag(int(snapped_tick), current_pitch)
+            else:
+                # REPEAT NOTE MODE: Create multiple notes
+                self._update_repeat_note_drag(int(snapped_tick), current_pitch)
+
+            self.draw()
+
+        elif self.is_erasing_drag:
+            # Check if left mouse button is still held
+            if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
+                self._finish_erasing_drag()
+                return
+
+            # Get current mouse position
+            mouse_pos = dpg.get_mouse_pos(local=False)
+            canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
+            mouse_x = mouse_pos[0] - canvas_rect_min[0]
+            mouse_y = mouse_pos[1] - canvas_rect_min[1]
+
+            # Erase note at current position
+            self._erase_note_at_position(mouse_x, mouse_y)
+            self.draw()
+
+    def _update_held_note_drag(self, current_tick: int, current_pitch: int):
+        """Update held note during drag (single note stretches)."""
+        if not self.draw_drag_notes:
+            return
+
+        # Update the single note's duration
+        first_note = self.draw_drag_notes[0]
+        start_tick = int(first_note.start * TPQN)
+
+        # Calculate new duration
+        if current_tick > start_tick:
+            new_duration_ticks = current_tick - start_tick
+
+            # Snap duration to quantization
+            snapped_duration_ticks = int(self.snap_to_grid(new_duration_ticks))
+            snapped_duration_beats = snapped_duration_ticks / TPQN
+
+            # Ensure minimum duration (one quantization unit)
+            min_duration = self.selected_quantization / TPQN
+            snapped_duration_beats = max(snapped_duration_beats, min_duration)
+
+            # Update note in list
+            updated_note = replace(
+                first_note,
+                note=current_pitch,  # Also update pitch if dragging vertically
+                duration=snapped_duration_beats
+            )
+
+            # Replace in both drag list and main list
+            self.draw_drag_notes[0] = updated_note
+
+            # Find and replace in main notes list
+            for i, note in enumerate(self.notes):
+                if note is first_note:
+                    self.notes[i] = updated_note
+                    break
+
+    def _update_repeat_note_drag(self, current_tick: int, current_pitch: int):
+        """Update repeat notes during drag (multiple notes created)."""
+        start_tick = self.draw_drag_start_tick
+
+        # Calculate how many quantized notes fit in the drag distance
+        if current_tick <= start_tick:
+            return
+
+        distance_ticks = current_tick - start_tick
+        num_notes = int(distance_ticks / self.selected_quantization) + 1
+
+        # Remove old drag notes from main list
+        for old_note in self.draw_drag_notes:
+            if old_note in self.notes:
+                self.notes.remove(old_note)
+
+        # Create new notes at quantized intervals
+        self.draw_drag_notes = []
+        for i in range(num_notes):
+            note_tick = start_tick + (i * self.selected_quantization)
+
+            new_note = Note(
+                note=current_pitch,  # Use current pitch
+                start=note_tick / TPQN,
+                duration=self.selected_quantization / TPQN,
+                velocity=self.current_velocity,
+                release_velocity=self.current_release_velocity,
+                selected=False
+            )
+
+            # Check if note already exists (avoid duplicates)
+            exists = False
+            for existing in self.notes:
+                if (existing.note == new_note.note and
+                    abs(existing.start - new_note.start) < 0.01):
+                    exists = True
+                    break
+
+            if not exists:
+                self.draw_drag_notes.append(new_note)
+                self.notes.append(new_note)
+
+    def _finish_drawing_drag(self):
+        """Finalize drawing drag operation."""
+        self.is_drawing_drag = False
+        self.draw_drag_start_tick = None
+        self.draw_drag_start_pitch = None
+        self.draw_drag_notes = []
+
+        # Notify that notes have changed (saves to song and updates playback)
+        if self.on_notes_changed:
+            self.on_notes_changed()
+
+        self.draw()
+
+    def _erase_note_at_position(self, mouse_x: float, mouse_y: float):
+        """Erase note at given mouse position (if exists)."""
+        # Convert to musical coordinates
+        pitch = self.get_pitch_at(mouse_y)
+        tick = self.get_tick_at(mouse_x)
+
+        # Find note at this position
+        for i, note in enumerate(self.notes):
+            note_start_tick = note.start * TPQN
+            note_end_tick = note_start_tick + (note.duration * TPQN)
+
+            if (note.note == pitch and
+                note_start_tick <= tick <= note_end_tick):
+                # Create unique identifier for this note
+                note_id = (note.note, note.start)
+
+                # Skip if already erased in this drag
+                if note_id in self.erased_notes:
+                    continue
+
+                # Mark as erased (using pitch and start time as identifier)
+                self.erased_notes.add(note_id)
+                # Remove from list
+                self.notes.pop(i)
+                # Only delete one per position, then break
+                break
+
+    def _finish_erasing_drag(self):
+        """Finalize erasing drag operation."""
+        self.is_erasing_drag = False
+        self.erased_notes = set()
+
+        # Notify that notes have changed (saves to song and updates playback)
+        if self.on_notes_changed:
+            self.on_notes_changed()
+
+        self.draw()
+
+    def _handle_mouse_release(self, sender, app_data):
+        """Handle mouse release - finish any active drag."""
+        if self.is_drawing_drag:
+            self._finish_drawing_drag()
+        elif self.is_erasing_drag:
+            self._finish_erasing_drag()
 
     def _handle_drag_start(self, sender, app_data):
         """Called when user starts dragging."""
@@ -860,14 +1292,40 @@ class PianoRoll:
 
         self.draw()
 
-    def zoom_in_vertical(self):
+    def zoom_in_vertical(self, mouse_y: Optional[float] = None):
         """Zoom in vertically (taller notes)."""
+        old_zoom = self.zoom_y
         self.zoom_y = min(self.zoom_y * 1.2, 3.0)  # Max: 36px per note
+
+        # Adjust scroll to keep cursor position stable
+        if mouse_y is not None:
+            zoom_factor = self.zoom_y / old_zoom
+            # Calculate pitch at cursor before zoom
+            pitch_at_cursor = self.get_pitch_at(mouse_y)
+            # Adjust scroll_y to keep the same pitch at the cursor position after zoom
+            self.scroll_y = (self.scroll_y + mouse_y) * zoom_factor - mouse_y
+            # Clamp scroll_y
+            max_scroll = max(0, (128 * GRID_HEIGHT * self.zoom_y) - self.height)
+            self.scroll_y = max(0, min(self.scroll_y, max_scroll))
+
         self.draw()
 
-    def zoom_out_vertical(self):
+    def zoom_out_vertical(self, mouse_y: Optional[float] = None):
         """Zoom out vertically (shorter notes)."""
+        old_zoom = self.zoom_y
         self.zoom_y = max(self.zoom_y / 1.2, 0.5)  # Min: 6px per note
+
+        # Adjust scroll to keep cursor position stable
+        if mouse_y is not None:
+            zoom_factor = self.zoom_y / old_zoom
+            # Calculate pitch at cursor before zoom
+            pitch_at_cursor = self.get_pitch_at(mouse_y)
+            # Adjust scroll_y to keep the same pitch at the cursor position after zoom
+            self.scroll_y = (self.scroll_y + mouse_y) * zoom_factor - mouse_y
+            # Clamp scroll_y
+            max_scroll = max(0, (128 * GRID_HEIGHT * self.zoom_y) - self.height)
+            self.scroll_y = max(0, min(self.scroll_y, max_scroll))
+
         self.draw()
 
     def _check_modifier(self, required: str, shift: bool, ctrl: bool, alt: bool) -> bool:
@@ -936,9 +1394,9 @@ class PianoRoll:
         if self._check_modifier(settings["vertical_zoom_modifier"],
                                shift_held, ctrl_held, alt_held):
             if scroll_delta > 0:
-                self.zoom_in_vertical()
+                self.zoom_in_vertical(mouse_y=mouse_y)  # Pass mouse position
             else:
-                self.zoom_out_vertical()
+                self.zoom_out_vertical(mouse_y=mouse_y)  # Pass mouse position
 
         elif self._check_modifier(settings["horizontal_zoom_modifier"],
                                  shift_held, ctrl_held, alt_held):
@@ -957,7 +1415,9 @@ class PianoRoll:
                                  shift_held, ctrl_held, alt_held):
             scroll_speed = int(GRID_HEIGHT * self.zoom_y * 3)
             self.scroll_y -= scroll_delta * scroll_speed
-            max_scroll = 128 * GRID_HEIGHT * self.zoom_y
+            # Prevent scrolling past the lowest note (note 0)
+            # Max scroll should stop when note 0 is at the bottom of the viewport
+            max_scroll = max(0, (128 * GRID_HEIGHT * self.zoom_y) - self.height)
             self.scroll_y = max(0, min(self.scroll_y, max_scroll))
             self.draw()
 
@@ -1065,9 +1525,11 @@ class PianoRoll:
 
         dpg.add_spacer(height=5)
 
-        # Canvas for drawing notes
-        self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
-        self.drawlist_id = self.canvas_id
+        # Canvas for drawing notes - wrap in child_window for auto-resize
+        with dpg.child_window(border=False, tag=f"piano_roll_canvas_container_{id(self)}") as canvas_container:
+            self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
+            self.drawlist_id = self.canvas_id
+            self._canvas_container = canvas_container
 
         # Mouse handlers for canvas
         with dpg.item_handler_registry() as handler:
@@ -1076,9 +1538,17 @@ class PianoRoll:
 
         dpg.bind_item_handler_registry(self.canvas_id, handler)
 
-        # Mouse wheel handler (window-level)
+        # Mouse wheel, move, and release handlers (window-level)
         with dpg.handler_registry():
             dpg.add_mouse_wheel_handler(callback=self._handle_mouse_wheel)
+            dpg.add_mouse_move_handler(callback=self._handle_mouse_move)
+            dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Left, callback=self._handle_mouse_release)
+
+        # Item resize handler for auto-resize
+        with dpg.item_handler_registry() as resize_handler:
+            dpg.add_item_resize_handler(callback=lambda: self.draw())
+        if hasattr(self, '_canvas_container'):
+            dpg.bind_item_handler_registry(self._canvas_container, resize_handler)
 
         # Initial draw
         self.draw()
@@ -1106,9 +1576,11 @@ class PianoRoll:
 
             dpg.add_spacer(height=5)
 
-            # Canvas for drawing notes
-            self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
-            self.drawlist_id = self.canvas_id
+            # Canvas for drawing notes - wrap in child_window for auto-resize
+            with dpg.child_window(border=False, tag=f"piano_roll_canvas_container_dockable_{id(self)}") as canvas_container:
+                self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)
+                self.drawlist_id = self.canvas_id
+                self._canvas_container = canvas_container
 
             # Mouse handlers for canvas
             with dpg.item_handler_registry() as handler:
@@ -1117,9 +1589,17 @@ class PianoRoll:
 
             dpg.bind_item_handler_registry(self.canvas_id, handler)
 
-            # Mouse wheel handler (window-level)
+            # Mouse wheel, move, and release handlers (window-level)
             with dpg.handler_registry():
                 dpg.add_mouse_wheel_handler(callback=self._handle_mouse_wheel)
+                dpg.add_mouse_move_handler(callback=self._handle_mouse_move)
+                dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Left, callback=self._handle_mouse_release)
+
+            # Item resize handler for auto-resize
+            with dpg.item_handler_registry() as resize_handler:
+                dpg.add_item_resize_handler(callback=lambda: self.draw())
+            if hasattr(self, '_canvas_container'):
+                dpg.bind_item_handler_registry(self._canvas_container, resize_handler)
 
         self.window_id = tag
 
