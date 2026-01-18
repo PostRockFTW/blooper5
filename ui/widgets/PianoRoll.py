@@ -1040,7 +1040,12 @@ class PianoRoll:
             # Convert to musical coordinates
             current_pitch = self.get_pitch_at(mouse_y)
             current_tick = self.get_tick_at(mouse_x)
-            snapped_tick = self.snap_to_grid(current_tick)
+
+            # Only snap if snap is enabled
+            if self.snap_enabled:
+                snapped_tick = self.snap_to_grid(current_tick)
+            else:
+                snapped_tick = current_tick
 
             # Get note mode from toolbar
             if self.note_mode == "held":
@@ -1081,8 +1086,12 @@ class PianoRoll:
         if current_tick > start_tick:
             new_duration_ticks = current_tick - start_tick
 
-            # Snap duration to quantization
-            snapped_duration_ticks = int(self.snap_to_grid(new_duration_ticks))
+            # Snap duration to quantization only if snap is enabled
+            if self.snap_enabled:
+                snapped_duration_ticks = int(self.snap_to_grid(new_duration_ticks))
+            else:
+                snapped_duration_ticks = int(new_duration_ticks)
+
             snapped_duration_beats = snapped_duration_ticks / TPQN
 
             # Ensure minimum duration (one quantization unit)
