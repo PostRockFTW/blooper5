@@ -2,6 +2,22 @@
 
 ## Completed
 
+### 2026-01-20: UI Toolbar Improvements & Bar Editing
+- **Note Toolbar Compaction**: Reduced height from 85px to 70px by adding WindowPadding override
+- **Bar Edit Toolbar**: New inline toolbar for bar/measure operations (Clear, Remove, Copy, Paste, Add Before/After)
+  - Compact 40px height (single row of buttons)
+  - Context-aware button states (enabled only when bar selected)
+  - Proper selection mode toggle (waits for user selection, clears on disable)
+- **Mixer Splitter**: Added adjustable splitter between main content and mixer panel
+- **Combined Layout**: Total toolbar height 110px when both toolbars visible (was 125px)
+
+Files modified:
+- `ui/widgets/NoteDrawToolbar.py` - Height reduction to 70px
+- `ui/widgets/BarEditToolbar.py` - NEW file, bar editing operations
+- `ui/views/DAWView.py` - Mixer splitter integration, toolbar layout
+- `core/commands.py` - Bar operation commands (Clear, Copy, Paste, etc.)
+- `core/models.py` - Bar editing support
+
 ### Architecture Refactoring (2026-01-16)
 ✅ **FIXED**: Consolidated audio/ and audio_engine/ folders - merged into single audio/ folder
 ✅ **FIXED**: Deleted unused audio/mixer.py placeholder

@@ -1527,13 +1527,6 @@ class PianoRoll:
         Args:
             parent: Parent container tag (optional)
         """
-        # Tool info at top
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=10)
-            dpg.add_text("Left-click: Draw | Right-click: Select | Mouse wheel: Scroll/Zoom", color=(150, 150, 150))
-
-        dpg.add_spacer(height=5)
-
         # Canvas for drawing notes - wrap in child_window for auto-resize
         with dpg.child_window(border=False, tag=f"piano_roll_canvas_container_{id(self)}") as canvas_container:
             self.canvas_id = dpg.add_drawlist(width=self.width, height=self.height)

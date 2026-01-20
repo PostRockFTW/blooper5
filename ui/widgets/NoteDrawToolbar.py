@@ -21,14 +21,14 @@ class NoteDrawToolbar:
 
     def __init__(self,
                  width: int = 800,
-                 height: int = 150,
+                 height: int = 100,
                  on_state_changed: Optional[Callable] = None):
         """
         Initialize note drawing toolbar.
 
         Args:
             width: Toolbar width
-            height: Toolbar height
+            height: Toolbar height (default 100px, compressed layout)
             on_state_changed: Callback when any control changes (receives state dict)
         """
         self.width = width
@@ -39,8 +39,11 @@ class NoteDrawToolbar:
         self.tool = 'draw'  # 'draw', 'select', 'erase'
         self.note_mode = 'held'  # 'held', 'repeat'
         self.velocity = 100  # 1-127
+        self.release_velocity = 64  # 0-127
         self.snap_enabled = True  # Grid snapping on/off
-        self.quantize = '1/4'  # Quantization value ('1/4', '1/8', '1/16', '1/32')
+        self.quantize = '1/4'  # Quantization value ('1/4', '1/8', '1/16', '1/32', '1/4T', '1/8T', etc.)
+        self.is_triplet = False  # Whether current quantization is triplet
+        self.bar_selection_mode = False  # Bar selection mode toggle
 
         # DearPyGui tags
         self._container_id = None
@@ -52,30 +55,30 @@ class NoteDrawToolbar:
         Args:
             parent: Parent container tag (None for top-level)
         """
-        with dpg.child_window(height=self.height, border=True, parent=parent) as self._container_id:
-            # Row 1: Tool selection and Quantization
+        # Create tight spacing theme for this toolbar
+        with dpg.theme() as toolbar_theme:
+            with dpg.theme_component(dpg.mvAll):
+                # Reduce vertical spacing between rows (default 4px → 1px)
+                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, 1)
+                # Reduce frame padding (default 6px → 3px)
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 8, 3)
+                # Reduce window padding (default 12px → 2px vertical, 4px horizontal)
+                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 4, 2)
+
+        with dpg.child_window(height=self.height, border=False, parent=parent) as self._container_id:
+            dpg.bind_item_theme(self._container_id, toolbar_theme)
+
+            # Row 1: Combined Quantization (straight and triplets)
             with dpg.group(horizontal=True):
-                dpg.add_text("Tool:")
-                dpg.add_radio_button(
-                    items=["Draw", "Select", "Erase"],
-                    default_value="Draw",
-                    callback=self._on_tool_changed,
-                    horizontal=True,
-                    tag="note_toolbar_tool"
-                )
-
-                dpg.add_spacer(width=20)
-
                 dpg.add_text("Quantize:")
                 dpg.add_radio_button(
-                    items=["1/4", "1/8", "1/16", "1/32", "1/64"],
+                    items=["1/4", "1/8", "1/16", "1/32", "1/64", "1/128",
+                           "1/4T", "1/8T", "1/16T", "1/32T", "1/64T", "1/128T"],
                     default_value="1/4",
                     callback=self._on_quantize_changed,
                     horizontal=True,
                     tag="note_toolbar_quantize"
                 )
-
-            dpg.add_separator()
 
             # Row 2: Note mode and Snap toggle
             with dpg.group(horizontal=True):
@@ -97,9 +100,7 @@ class NoteDrawToolbar:
                     tag="note_toolbar_snap"
                 )
 
-            dpg.add_separator()
-
-            # Row 3: Velocity control
+            # Row 3: Velocity and Release Velocity controls (combined on one line)
             with dpg.group(horizontal=True):
                 dpg.add_text("Velocity:")
                 dpg.add_slider_int(
@@ -107,10 +108,32 @@ class NoteDrawToolbar:
                     min_value=1,
                     max_value=127,
                     callback=self._on_velocity_changed,
-                    width=300,
+                    width=200,
                     tag="note_toolbar_velocity"
                 )
                 dpg.add_text(str(self.velocity), tag="note_toolbar_velocity_display")
+
+                dpg.add_spacer(width=20)
+
+                dpg.add_text("Release:")
+                dpg.add_slider_int(
+                    default_value=self.release_velocity,
+                    min_value=0,
+                    max_value=127,
+                    callback=self._on_release_velocity_changed,
+                    width=200,
+                    tag="note_toolbar_release_velocity"
+                )
+                dpg.add_text(str(self.release_velocity), tag="note_toolbar_release_velocity_display")
+
+                dpg.add_spacer(width=20)
+
+                dpg.add_checkbox(
+                    label="Bar Selection Mode",
+                    default_value=False,
+                    callback=self._on_bar_selection_mode_changed,
+                    tag="note_toolbar_bar_selection_mode"
+                )
 
     def create_window(self, tag: str = "note_draw_toolbar"):
         """
@@ -138,6 +161,7 @@ class NoteDrawToolbar:
             - tool: 'draw', 'select', or 'erase'
             - note_mode: 'held' or 'repeat'
             - velocity: 1-127
+            - release_velocity: 0-127
             - snap_enabled: bool
             - quantize: '1/4', '1/8', etc.
         """
@@ -145,8 +169,10 @@ class NoteDrawToolbar:
             'tool': self.tool,
             'note_mode': self.note_mode,
             'velocity': self.velocity,
+            'release_velocity': self.release_velocity,
             'snap_enabled': self.snap_enabled,
-            'quantize': self.quantize
+            'quantize': self.quantize,
+            'bar_selection_mode': self.bar_selection_mode
         }
 
     # Callback handlers
@@ -168,20 +194,72 @@ class NoteDrawToolbar:
             dpg.set_value("note_toolbar_velocity_display", str(value))
         self._notify_change()
 
+    def _on_release_velocity_changed(self, sender, value):
+        """Handle release velocity slider change."""
+        self.release_velocity = value
+        if dpg.does_item_exist("note_toolbar_release_velocity_display"):
+            dpg.set_value("note_toolbar_release_velocity_display", str(value))
+        self._notify_change()
+
     def _on_snap_changed(self, sender, value):
         """Handle snap toggle change."""
         self.snap_enabled = value
         self._notify_change()
 
     def _on_quantize_changed(self, sender, value):
-        """Handle quantization change."""
+        """Handle quantization change (combined straight and triplets)."""
         self.quantize = value
+        self.is_triplet = 'T' in value
+        self._notify_change()
+
+    def _on_bar_selection_mode_changed(self, sender, value):
+        """Handle bar selection mode toggle."""
+        self.bar_selection_mode = value
         self._notify_change()
 
     def _notify_change(self):
         """Notify parent of state change."""
         if self.on_state_changed:
             self.on_state_changed(self.get_state())
+
+    def _notify_change_with_action(self, action: str):
+        """Notify parent of state change with specific action."""
+        if self.on_state_changed:
+            state = self.get_state()
+            state['action'] = action
+            self.on_state_changed(state)
+
+    def set_tool(self, tool: str):
+        """
+        Set tool programmatically (for keyboard shortcuts).
+
+        Args:
+            tool: 'draw', 'select', or 'erase'
+        """
+        self.tool = tool.lower()
+
+        # Update radio button to match
+        if dpg.does_item_exist("note_toolbar_tool"):
+            display_value = tool.capitalize()
+            dpg.set_value("note_toolbar_tool", display_value)
+
+        self._notify_change()
+
+    def set_quantize(self, quantize: str):
+        """
+        Set quantization programmatically (for keyboard shortcuts).
+
+        Args:
+            quantize: '1/4', '1/8', '1/16', '1/32', '1/4T', '1/8T', etc.
+        """
+        self.quantize = quantize
+        self.is_triplet = 'T' in quantize
+
+        # Update combined radio button
+        if dpg.does_item_exist("note_toolbar_quantize"):
+            dpg.set_value("note_toolbar_quantize", quantize)
+
+        self._notify_change()
 
     def show(self):
         """Show toolbar."""

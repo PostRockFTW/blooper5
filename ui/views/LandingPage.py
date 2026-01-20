@@ -27,6 +27,7 @@ class LandingPage:
                  on_open_project: Callable,
                  on_return_to_project: Optional[Callable] = None,
                  on_save_project: Optional[Callable] = None,
+                 on_save_as_project: Optional[Callable] = None,
                  on_settings: Optional[Callable] = None,
                  on_exit: Optional[Callable] = None):
         """
@@ -35,6 +36,7 @@ class LandingPage:
             on_open_project: Callback when "Open Project" clicked (receives file_path)
             on_return_to_project: Callback when "Return to Project" clicked (optional)
             on_save_project: Callback when "Save Project" clicked (optional)
+            on_save_as_project: Callback when "Save As" clicked (optional)
             on_settings: Callback when "Settings" clicked (optional)
             on_exit: Callback when "Exit" clicked (optional)
         """
@@ -42,6 +44,7 @@ class LandingPage:
         self.on_open_project = on_open_project
         self.on_return_to_project = on_return_to_project
         self.on_save_project = on_save_project
+        self.on_save_as_project = on_save_as_project
         self.on_settings = on_settings
         self.on_exit = on_exit
 
@@ -104,7 +107,7 @@ class LandingPage:
     def set_active_project(self, active: bool):
         """
         Set whether there's an active project.
-        Controls visibility of "Return to Project" and "Save Project" buttons.
+        Controls visibility of "Return to Project", "Save Project", and "Save As" buttons.
 
         Args:
             active: True if project is active
@@ -114,6 +117,8 @@ class LandingPage:
             dpg.configure_item("return_to_project_btn", show=active)
         if dpg.does_item_exist("save_project_btn"):
             dpg.configure_item("save_project_btn", show=active)
+        if dpg.does_item_exist("save_as_project_btn"):
+            dpg.configure_item("save_as_project_btn", show=active)
 
     def create(self) -> str:
         """
@@ -166,7 +171,7 @@ class LandingPage:
 
                         # Load Project button (standard style)
                         dpg.add_button(
-                            label="📁 Load Project",
+                            label="Load Project",
                             width=280,
                             height=50,
                             callback=self._show_file_dialog
@@ -176,7 +181,7 @@ class LandingPage:
 
                         # Save Project button (hidden by default, shown when project active)
                         dpg.add_button(
-                            label="💾 Save Project",
+                            label="Save Project",
                             width=280,
                             height=50,
                             callback=lambda: self.on_save_project() if self.on_save_project else None,
@@ -186,9 +191,21 @@ class LandingPage:
 
                         dpg.add_spacer(height=15)
 
+                        # Save As button (hidden by default, shown when project active)
+                        dpg.add_button(
+                            label="Save As...",
+                            width=280,
+                            height=50,
+                            callback=lambda: self.on_save_as_project() if self.on_save_as_project else None,
+                            tag="save_as_project_btn",
+                            show=self.has_active_project
+                        )
+
+                        dpg.add_spacer(height=15)
+
                         # Return to Project button (success green, hidden by default)
                         return_btn = dpg.add_button(
-                            label="↩ Return to Project",
+                            label="Return to Project",
                             width=280,
                             height=50,
                             callback=lambda: self.on_return_to_project() if self.on_return_to_project else None,
@@ -202,7 +219,7 @@ class LandingPage:
 
                         # Settings button
                         dpg.add_button(
-                            label="⚙  Settings",
+                            label="Settings",
                             callback=lambda: self.on_settings() if self.on_settings else None,
                             width=280,
                             height=40

@@ -93,17 +93,19 @@ class DAWView:
 
         # Panel sizes (resizable via draggable splitters)
         self.left_panel_width = 900  # Left panel (Note Controls + Piano Roll)
-        self.note_controls_height = 150  # Note Controls toolbar height
-        self.mixer_height = 240  # Mixer strip height
+        self.note_controls_height = 70  # Note Controls toolbar height (compact)
+        self.mixer_height = 360  # Mixer strip height (increased to show all controls including FX buttons)
 
         # Splitter dragging state
         self.dragging_vertical_splitter = False  # Left/Right splitter
         self.dragging_horizontal_splitter = False  # Note Controls/Piano Roll splitter
+        self.dragging_mixer_splitter = False  # Main content/Mixer splitter
         self.drag_start_pos = None
 
         # Sub-widgets (will be initialized in create())
         self.piano_roll = None
         self.note_draw_toolbar = None
+        self.bar_edit_toolbar = None
         self.sound_designer = None
         self.mixer_strips = []  # 17 MixerStrip instances
 
@@ -188,6 +190,9 @@ class DAWView:
                         )
                         self.piano_roll.create_inline(parent="piano_roll_panel")
 
+                        # Set up bar selection callback for BarEditToolbar
+                        self.piano_roll.on_bar_selection_changed = self._on_bar_selection_changed
+
                 # Vertical splitter (between Left and Right panels)
                 with dpg.drawlist(width=4, height=-self.mixer_height-10, tag="vertical_splitter_visual"):
                     pass  # Will draw in post-create
@@ -201,6 +206,15 @@ class DAWView:
                     self._create_dual_oscillator_ui()
 
             dpg.add_spacer(height=2)
+
+            # Horizontal splitter (between main content and mixer)
+            with dpg.drawlist(width=-1, height=4, tag="mixer_splitter_visual"):
+                dpg.draw_rectangle((0, 0), (2000, 4),
+                                 fill=(60, 60, 60, 255), color=(80, 80, 80, 255))
+
+            # Invisible button for mixer splitter drag
+            dpg.add_button(label="", width=-1, height=4, tag="mixer_splitter_btn",
+                         callback=lambda: None)
 
             # Bottom: 17-Channel Mixer Strip (fixed at bottom)
             self._create_bottom_mixer()
@@ -231,6 +245,14 @@ class DAWView:
 
         dpg.bind_item_handler_registry("vertical_splitter_btn", "vertical_splitter_handler")
 
+        # Mixer splitter (Main content / Mixer)
+        with dpg.item_handler_registry(tag="mixer_splitter_handler") as handler:
+            dpg.add_item_hover_handler(callback=self._on_mixer_splitter_hover)
+            dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Left,
+                                        callback=self._on_mixer_splitter_click)
+
+        dpg.bind_item_handler_registry("mixer_splitter_btn", "mixer_splitter_handler")
+
     def _setup_keyboard_handlers(self):
         """Setup keyboard handlers for playback and other shortcuts."""
         # Window-level keyboard handlers
@@ -250,6 +272,18 @@ class DAWView:
             # Undo/Redo
             dpg.add_key_press_handler(dpg.mvKey_Z, callback=lambda: self._handle_ctrl_z())
             dpg.add_key_press_handler(dpg.mvKey_Y, callback=lambda: self._handle_ctrl_y())
+
+            # Tool switching (D/S/E)
+            dpg.add_key_press_handler(dpg.mvKey_D, callback=self._on_key_tool_draw)
+            dpg.add_key_press_handler(dpg.mvKey_S, callback=self._on_key_tool_select)
+            dpg.add_key_press_handler(dpg.mvKey_E, callback=self._on_key_tool_erase)
+
+            # Quantization shortcuts (1-5 for straight, Shift+1-4 for triplets)
+            dpg.add_key_press_handler(dpg.mvKey_1, callback=self._on_key_quantize_1)
+            dpg.add_key_press_handler(dpg.mvKey_2, callback=self._on_key_quantize_2)
+            dpg.add_key_press_handler(dpg.mvKey_3, callback=self._on_key_quantize_3)
+            dpg.add_key_press_handler(dpg.mvKey_4, callback=self._on_key_quantize_4)
+            dpg.add_key_press_handler(dpg.mvKey_5, callback=self._on_key_quantize_5)
 
     def _handle_ctrl_s(self):
         """Handle Ctrl+S for save (check if Ctrl is held)."""
@@ -276,6 +310,70 @@ class DAWView:
         """Handle Ctrl+Y for redo (check if Ctrl is held)."""
         if dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl):
             self.redo()
+
+    # Tool switching keyboard handlers
+
+    def _on_key_tool_draw(self):
+        """Handle D key for Draw tool (unless Ctrl is held)."""
+        if not (dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.note_draw_toolbar:
+                self.note_draw_toolbar.set_tool('draw')
+
+    def _on_key_tool_select(self):
+        """Handle S key for Select tool (unless Ctrl is held for Save)."""
+        if not (dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.note_draw_toolbar:
+                self.note_draw_toolbar.set_tool('select')
+
+    def _on_key_tool_erase(self):
+        """Handle E key for Erase tool (unless Ctrl is held)."""
+        if not (dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.note_draw_toolbar:
+                self.note_draw_toolbar.set_tool('erase')
+
+    # Quantization keyboard handlers
+
+    def _on_key_quantize_1(self):
+        """Handle 1 key for 1/4 note (or 1/4T if Shift held)."""
+        if not (dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.note_draw_toolbar:
+                if dpg.is_key_down(dpg.mvKey_Shift):
+                    self.note_draw_toolbar.set_quantize('1/4T')
+                else:
+                    self.note_draw_toolbar.set_quantize('1/4')
+
+    def _on_key_quantize_2(self):
+        """Handle 2 key for 1/8 note (or 1/8T if Shift held)."""
+        if not (dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.note_draw_toolbar:
+                if dpg.is_key_down(dpg.mvKey_Shift):
+                    self.note_draw_toolbar.set_quantize('1/8T')
+                else:
+                    self.note_draw_toolbar.set_quantize('1/8')
+
+    def _on_key_quantize_3(self):
+        """Handle 3 key for 1/16 note (or 1/16T if Shift held)."""
+        if not (dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.note_draw_toolbar:
+                if dpg.is_key_down(dpg.mvKey_Shift):
+                    self.note_draw_toolbar.set_quantize('1/16T')
+                else:
+                    self.note_draw_toolbar.set_quantize('1/16')
+
+    def _on_key_quantize_4(self):
+        """Handle 4 key for 1/32 note (or 1/32T if Shift held)."""
+        if not (dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.note_draw_toolbar:
+                if dpg.is_key_down(dpg.mvKey_Shift):
+                    self.note_draw_toolbar.set_quantize('1/32T')
+                else:
+                    self.note_draw_toolbar.set_quantize('1/32')
+
+    def _on_key_quantize_5(self):
+        """Handle 5 key for 1/64 note."""
+        if not (dpg.is_key_down(dpg.mvKey_Control) or dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.note_draw_toolbar:
+                self.note_draw_toolbar.set_quantize('1/64')
 
     def _check_unsaved_and_new(self):
         """Check for unsaved changes before creating a new project."""
@@ -433,6 +531,9 @@ class DAWView:
         # Restore the previous state
         self.app_state.set_current_song(previous_song)
 
+        # Update current_song_id to match the restored song object
+        self.current_song_id = id(previous_song)
+
         # Reload the current track in piano roll
         if self.piano_roll and hasattr(self, 'current_track'):
             self._on_track_selected(self.current_track)
@@ -455,6 +556,9 @@ class DAWView:
 
         # Restore the next state
         self.app_state.set_current_song(next_song)
+
+        # Update current_song_id to match the restored song object
+        self.current_song_id = id(next_song)
 
         # Reload the current track in piano roll
         if self.piano_roll and hasattr(self, 'current_track'):
@@ -482,6 +586,16 @@ class DAWView:
         """Handle vertical splitter drag."""
         if not self.dragging_vertical_splitter:
             self.dragging_vertical_splitter = True
+            self.drag_start_pos = dpg.get_mouse_pos()
+
+    def _on_mixer_splitter_hover(self, sender, app_data):
+        """Change cursor when hovering over mixer splitter."""
+        pass  # Cursor change can be added later
+
+    def _on_mixer_splitter_click(self, sender, app_data):
+        """Handle mixer splitter drag."""
+        if not self.dragging_mixer_splitter:
+            self.dragging_mixer_splitter = True
             self.drag_start_pos = dpg.get_mouse_pos()
 
     def _create_dual_oscillator_ui(self):
@@ -646,18 +760,443 @@ class DAWView:
             traceback.print_exc()
 
     def _create_note_controls(self):
-        """Create note drawing toolbar using NoteDrawToolbar widget."""
+        """Create note drawing toolbar and bar edit toolbar."""
+        # Note Draw Toolbar
         self.note_draw_toolbar = NoteDrawToolbar(
             width=self.left_panel_width - 20,
-            height=self.note_controls_height,
+            height=70,  # Compact height
             on_state_changed=self._on_toolbar_state_changed
         )
         self.note_draw_toolbar.create_inline(parent="note_controls_panel")
 
+        # Bar Edit Toolbar (inline, hidden by default)
+        from ui.widgets.BarEditToolbar import BarEditToolbar
+        self.bar_edit_toolbar = BarEditToolbar(
+            width=self.left_panel_width - 20,
+            height=40,  # Single row of buttons
+            on_state_changed=self._on_bar_toolbar_state_changed
+        )
+        # Create container group (hidden by default)
+        with dpg.group(show=False, tag="bar_edit_toolbar_container", parent="note_controls_panel"):
+            self.bar_edit_toolbar.create_inline(parent="bar_edit_toolbar_container")
+
     def _on_toolbar_state_changed(self, toolbar_state: dict):
-        """Handle toolbar state changes - update Piano Roll."""
+        """Handle toolbar state changes - update Piano Roll and handle bar actions."""
         if self.piano_roll:
             self.piano_roll.update_toolbar_state(toolbar_state)
+
+        # Handle bar selection mode toggle - show/hide bar toolbar and expand panel
+        bar_selection_mode = toolbar_state.get('bar_selection_mode', False)
+        if dpg.does_item_exist("bar_edit_toolbar_container"):
+            # Update bar toolbar's internal state
+            if self.bar_edit_toolbar:
+                self.bar_edit_toolbar.enable_selection_mode(bar_selection_mode)
+
+            if bar_selection_mode:
+                dpg.show_item("bar_edit_toolbar_container")
+                # Expand note_controls_panel to fit both toolbars
+                self.note_controls_height = 110  # 70 (note toolbar) + 40 (bar toolbar)
+                dpg.configure_item("note_controls_panel", height=self.note_controls_height)
+            else:
+                dpg.hide_item("bar_edit_toolbar_container")
+                # Shrink back to just note toolbar
+                self.note_controls_height = 70  # Just note toolbar (tighter now)
+                dpg.configure_item("note_controls_panel", height=self.note_controls_height)
+
+        # Handle bar editing actions
+        action = toolbar_state.get('action')
+        if action == 'clear_bar':
+            self._execute_clear_bar_from_piano_roll()
+        elif action == 'remove_bar':
+            self._execute_remove_bar_from_piano_roll()
+        elif action == 'copy_bar':
+            self._execute_copy_bar_from_piano_roll()
+        elif action == 'paste_bar':
+            self._execute_paste_bar_from_piano_roll()
+        elif action == 'add_bar_before':
+            self._execute_add_bar_before_from_piano_roll()
+        elif action == 'add_bar_after':
+            self._execute_add_bar_after_from_piano_roll()
+
+    def _on_bar_selection_changed(self, bar_start: int, bar_end: int):
+        """Handle bar selection changes from Piano Roll - update BarEditToolbar."""
+        if self.bar_edit_toolbar:
+            self.bar_edit_toolbar.set_selected_bars(bar_start, bar_end)
+
+    def _on_bar_toolbar_state_changed(self, toolbar_state: dict):
+        """Handle bar edit toolbar state changes."""
+        # Update Piano Roll with bar edit state
+        if self.piano_roll:
+            self.piano_roll.update_bar_edit_state(toolbar_state)
+
+        # Handle button actions
+        action = toolbar_state.get('action')
+        if action == 'clear_bar':
+            self._execute_clear_bar(toolbar_state)
+        elif action == 'remove_bar':
+            self._execute_remove_bar(toolbar_state)
+        elif action == 'copy_bar':
+            self._execute_copy_bar(toolbar_state)
+        elif action == 'paste_bar':
+            self._execute_paste_bar(toolbar_state)
+        elif action == 'add_bar_before':
+            self._execute_add_bar_before(toolbar_state)
+        elif action == 'add_bar_after':
+            self._execute_add_bar_after(toolbar_state)
+
+    # New methods that get bar selection from PianoRoll (for integrated toolbar)
+    def _execute_clear_bar_from_piano_roll(self):
+        """Execute clear bar command using PianoRoll's bar selection."""
+        if not self.piano_roll:
+            return
+
+        bar_start = self.piano_roll.selected_bar_start
+        bar_end = self.piano_roll.selected_bar_end if self.piano_roll.selected_bar_end is not None else bar_start
+
+        if bar_start is None:
+            return  # No selection
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        track_index = self.current_track
+        from core.commands import ClearBarCommand
+        command = ClearBarCommand(track_index, bar_start, bar_end)
+        command.execute(self.app_state)
+
+        # Update current_song_id to match the new song object
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+    def _execute_remove_bar_from_piano_roll(self):
+        """Execute remove bar command using PianoRoll's bar selection."""
+        if not self.piano_roll:
+            return
+
+        bar_start = self.piano_roll.selected_bar_start
+        bar_end = self.piano_roll.selected_bar_end if self.piano_roll.selected_bar_end is not None else bar_start
+
+        if bar_start is None:
+            return  # No selection
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        from core.commands import RemoveBarCommand
+        command = RemoveBarCommand(bar_start, bar_end)
+        command.execute(self.app_state)
+
+        # Update current_song_id to match the new song object
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+        # Clear piano roll selection (bars are removed)
+        self.piano_roll.selected_bar_start = None
+        self.piano_roll.selected_bar_end = None
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+    def _execute_copy_bar_from_piano_roll(self):
+        """Execute copy bar command using PianoRoll's bar selection."""
+        if not self.piano_roll:
+            return
+
+        bar_start = self.piano_roll.selected_bar_start
+        bar_end = self.piano_roll.selected_bar_end if self.piano_roll.selected_bar_end is not None else bar_start
+
+        if bar_start is None:
+            return  # No selection
+
+        track_index = self.current_track
+        from core.commands import CopyBarCommand
+        command = CopyBarCommand(track_index, bar_start, bar_end)
+        command.execute(self.app_state)  # Copy is read-only, no undo snapshot needed
+
+        # Store copied notes for paste operation
+        self.piano_roll.copied_notes = command.copied_notes
+        self.piano_roll.copied_bar_length = command.copied_bar_length
+
+    def _execute_paste_bar_from_piano_roll(self):
+        """Execute paste bar command using PianoRoll's bar selection."""
+        if not self.piano_roll:
+            return
+
+        bar_start = self.piano_roll.selected_bar_start
+        bar_end = self.piano_roll.selected_bar_end if self.piano_roll.selected_bar_end is not None else bar_start
+        copied_notes = getattr(self.piano_roll, 'copied_notes', [])
+        copied_bar_length = getattr(self.piano_roll, 'copied_bar_length', 0)
+
+        if bar_start is None or not copied_notes:
+            return  # No selection or no copied notes
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        track_index = self.current_track
+        from core.commands import PasteBarCommand
+        command = PasteBarCommand(track_index, bar_start, bar_end, copied_notes, copied_bar_length)
+        command.execute(self.app_state)
+
+        # Update current_song_id to match the new song object
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+    def _execute_add_bar_before_from_piano_roll(self):
+        """Execute add bar before command using PianoRoll's bar selection."""
+        if not self.piano_roll:
+            return
+
+        bar_index = self.piano_roll.selected_bar_start
+
+        if bar_index is None:
+            return  # No selection
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        # Get current time signature and BPM from song
+        song = self.app_state.get_current_song()
+        time_signature = song.time_signature if song else (4, 4)
+        bpm = song.bpm if song else 120.0
+
+        from core.commands import AddBarCommand
+        command = AddBarCommand(
+            bar_index, position="before",
+            time_signature=time_signature, bpm=bpm
+        )
+        command.execute(self.app_state)
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+        # Update current_song_id to match the new song object
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+    def _execute_add_bar_after_from_piano_roll(self):
+        """Execute add bar after command using PianoRoll's bar selection."""
+        if not self.piano_roll:
+            return
+
+        bar_index = self.piano_roll.selected_bar_start
+
+        if bar_index is None:
+            return  # No selection
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        # Get current time signature and BPM from song
+        song = self.app_state.get_current_song()
+        time_signature = song.time_signature if song else (4, 4)
+        bpm = song.bpm if song else 120.0
+
+        from core.commands import AddBarCommand
+        command = AddBarCommand(
+            bar_index, position="after",
+            time_signature=time_signature, bpm=bpm
+        )
+        command.execute(self.app_state)
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+        # Update current_song_id to match the new song object
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+    # Original methods that get bar selection from toolbar_state (for old BarEditToolbar)
+    def _execute_clear_bar(self, toolbar_state: dict):
+        """Execute clear bar command."""
+        bar_start = toolbar_state.get('selected_bar_start')
+        bar_end = toolbar_state.get('selected_bar_end', bar_start)
+
+        if bar_start is None:
+            return  # No selection
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        track_index = self.current_track
+        from core.commands import ClearBarCommand
+        command = ClearBarCommand(track_index, bar_start, bar_end)
+        command.execute(self.app_state)
+
+        # Update current_song_id to match the new song object
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+    def _execute_remove_bar(self, toolbar_state: dict):
+        """Execute remove bar command."""
+        bar_start = toolbar_state.get('selected_bar_start')
+        bar_end = toolbar_state.get('selected_bar_end', bar_start)
+
+        if bar_start is None:
+            return  # No selection
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        from core.commands import RemoveBarCommand
+        command = RemoveBarCommand(bar_start, bar_end)
+        command.execute(self.app_state)
+
+        # Update current_song_id to match the new song object
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+        # Clear toolbar selection (bars are removed)
+        if self.bar_edit_toolbar:
+            self.bar_edit_toolbar.clear_selection()
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+    def _execute_copy_bar(self, toolbar_state: dict):
+        """Execute copy bar command."""
+        bar_start = toolbar_state.get('selected_bar_start')
+        bar_end = toolbar_state.get('selected_bar_end', bar_start)
+
+        if bar_start is None:
+            return  # No selection
+
+        track_index = self.current_track
+        from core.commands import CopyBarCommand
+        command = CopyBarCommand(track_index, bar_start, bar_end)
+        command.execute(self.app_state)  # Copy is read-only, no undo snapshot needed
+
+        # Update toolbar with copied notes
+        if self.bar_edit_toolbar:
+            self.bar_edit_toolbar.set_copied_notes(
+                command.copied_notes,
+                command.copied_bar_length
+            )
+
+    def _execute_paste_bar(self, toolbar_state: dict):
+        """Execute paste bar command."""
+        bar_start = toolbar_state.get('selected_bar_start')
+        bar_end = toolbar_state.get('selected_bar_end', bar_start)
+        copied_notes = toolbar_state.get('copied_notes', [])
+        copied_bar_length = toolbar_state.get('copied_bar_length', 0)
+
+        if bar_start is None or not copied_notes:
+            return  # No selection or no copied notes
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        track_index = self.current_track
+        from core.commands import PasteBarCommand
+        command = PasteBarCommand(
+            track_index, bar_start, bar_end,
+            copied_notes, copied_bar_length
+        )
+        command.execute(self.app_state)
+
+        # Update current_song_id to match the new song object
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+    def _execute_add_bar_before(self, toolbar_state: dict):
+        """Execute add bar before command."""
+        bar_index = toolbar_state.get('selected_bar_start')
+
+        if bar_index is None:
+            return  # No selection
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        # Get current time signature and BPM from song
+        song = self.app_state.get_current_song()
+        time_signature = song.time_signature if song else (4, 4)
+        bpm = song.bpm if song else 120.0
+
+        from core.commands import AddBarCommand
+        command = AddBarCommand(
+            bar_index, position="before",
+            time_signature=time_signature, bpm=bpm
+        )
+        command.execute(self.app_state)
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+        # Update current_song_id to match the new song object (prevents cross-project note pollution)
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+    def _execute_add_bar_after(self, toolbar_state: dict):
+        """Execute add bar after command."""
+        bar_index = toolbar_state.get('selected_bar_start')
+
+        if bar_index is None:
+            return  # No selection
+
+        # Take undo snapshot
+        self.take_snapshot()
+
+        # Get current time signature and BPM from song
+        song = self.app_state.get_current_song()
+        time_signature = song.time_signature if song else (4, 4)
+        bpm = song.bpm if song else 120.0
+
+        from core.commands import AddBarCommand
+        command = AddBarCommand(
+            bar_index, position="after",
+            time_signature=time_signature, bpm=bpm
+        )
+        command.execute(self.app_state)
+
+        # Refresh Piano Roll
+        self._refresh_piano_roll_from_song()
+
+        # Update current_song_id to match the new song object (prevents cross-project note pollution)
+        new_song = self.app_state.get_current_song()
+        if new_song:
+            self.current_song_id = id(new_song)
+
+    def _refresh_piano_roll_from_song(self):
+        """Refresh Piano Roll display from current song."""
+        if not self.piano_roll:
+            return
+
+        song = self.app_state.get_current_song()
+        if not song:
+            return
+
+        # Reload current track
+        if self.current_track < len(song.tracks):
+            track = song.tracks[self.current_track]
+            track_color = self.track_colors[self.current_track]
+            self.piano_roll.load_track_notes(
+                track_index=self.current_track,
+                notes=list(track.notes),
+                track_color=track_color,
+                song=song
+            )
 
     def _create_transport_controls(self):
         """Create play, stop, record, BPM, time position controls."""
@@ -735,37 +1274,39 @@ class DAWView:
 
     def _create_bottom_mixer(self):
         """Create collapsible 17-channel mixer strip."""
-        with dpg.group(tag="daw_mixer_container"):
-            # Toggle button
-            with dpg.group(horizontal=True):
-                dpg.add_button(
-                    label="Hide Mixer ▼",
-                    callback=self._toggle_mixer_visibility,
-                    tag="daw_mixer_toggle_button"
-                )
-                dpg.add_spacer(width=10)
-                dpg.add_text("17-Channel Mixer (16 Rainbow + Master)", color=(150, 150, 150, 255))
-
-            dpg.add_spacer(height=5)
-
-            # Mixer strip container (can be hidden)
-            with dpg.group(tag="daw_mixer_strips_group", horizontal=True):
-                # Create 17 mixer strips (16 tracks + 1 master)
-                for i in range(17):
-                    is_master = (i == 16)
-                    channel_num = i + 1 if not is_master else 17
-                    color = self.track_colors[i]
-
-                    # Create MixerStrip widget
-                    mixer_strip = MixerStrip(
-                        channel_number=channel_num,
-                        channel_color=color,
-                        is_master=is_master,
-                        on_select=self._on_track_selected,
-                        on_value_change=lambda param, value, idx=i: self._on_mixer_value_change(idx, param, value)
+        # Wrap mixer in child_window with fixed height to ensure proper positioning
+        with dpg.child_window(height=self.mixer_height, border=False, tag="daw_mixer_window"):
+            with dpg.group(tag="daw_mixer_container"):
+                # Toggle button
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        label="Hide Mixer ▼",
+                        callback=self._toggle_mixer_visibility,
+                        tag="daw_mixer_toggle_button"
                     )
-                    mixer_strip.create(parent="daw_mixer_strips_group")
-                    self.mixer_strips.append(mixer_strip)
+                    dpg.add_spacer(width=10)
+                    dpg.add_text("17-Channel Mixer (16 Rainbow + Master)", color=(150, 150, 150, 255))
+
+                dpg.add_spacer(height=5)
+
+                # Mixer strip container (can be hidden)
+                with dpg.group(tag="daw_mixer_strips_group", horizontal=True):
+                    # Create 17 mixer strips (16 tracks + 1 master)
+                    for i in range(17):
+                        is_master = (i == 16)
+                        channel_num = i + 1 if not is_master else 17
+                        color = self.track_colors[i]
+
+                        # Create MixerStrip widget
+                        mixer_strip = MixerStrip(
+                            channel_number=channel_num,
+                            channel_color=color,
+                            is_master=is_master,
+                            on_select=self._on_track_selected,
+                            on_value_change=lambda param, value, idx=i: self._on_mixer_value_change(idx, param, value)
+                        )
+                        mixer_strip.create(parent="daw_mixer_strips_group")
+                        self.mixer_strips.append(mixer_strip)
 
     # Transport Control Callbacks
 
@@ -812,6 +1353,9 @@ class DAWView:
 
             # Update app state
             self.app_state.set_current_song(updated_song)
+
+            # Update current_song_id to match the new song object
+            self.current_song_id = id(updated_song)
 
     def _on_play(self):
         """Start/pause playback."""
@@ -1222,6 +1766,10 @@ class DAWView:
 
     def update(self):
         """Update method called every frame to handle splitter dragging and time display."""
+        # Update piano roll (for auto-resize)
+        if self.piano_roll:
+            self.piano_roll.update()
+
         # Update time display and playhead if playing
         if self.is_playing:
             self._update_time_display()
@@ -1238,6 +1786,7 @@ class DAWView:
         if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
             self.dragging_horizontal_splitter = False
             self.dragging_vertical_splitter = False
+            self.dragging_mixer_splitter = False
             self.drag_start_pos = None
             return
 
@@ -1265,12 +1814,34 @@ class DAWView:
                 dpg.configure_item("left_panel", width=self.left_panel_width)
                 self.drag_start_pos = mouse_pos
 
+        # Handle mixer splitter dragging (Main content / Mixer)
+        if self.dragging_mixer_splitter and self.drag_start_pos:
+            mouse_pos = dpg.get_mouse_pos()
+            delta_y = mouse_pos[1] - self.drag_start_pos[1]
+
+            # Update mixer height (drag DOWN = larger mixer, drag UP = smaller mixer)
+            new_height = max(200, min(600, self.mixer_height - delta_y))
+            if new_height != self.mixer_height:
+                self.mixer_height = new_height
+
+                # Update all elements that depend on mixer height
+                dpg.configure_item("daw_mixer_window", height=self.mixer_height)
+                dpg.configure_item("left_panel", height=-self.mixer_height-10)
+                dpg.configure_item("vertical_splitter_visual", height=-self.mixer_height-10)
+                dpg.configure_item("vertical_splitter_btn", height=-self.mixer_height-10)
+                dpg.configure_item("sound_designer_panel", height=-self.mixer_height-10)
+
+                self.drag_start_pos = mouse_pos
+
     def _create_test_track_with_changing_measures(self):
         """Create and load test track with changing time signatures and tempos."""
         from core.test_data import create_test_track_with_changing_measures
 
         test_song = create_test_track_with_changing_measures()
         self.app_state.set_current_song(test_song)
+
+        # Update current_song_id to match the test song object
+        self.current_song_id = id(test_song)
 
         # Update the view with the test song
         if self.current_track >= 0 and self.current_track < len(test_song.tracks):

@@ -7,55 +7,246 @@ All models are immutable dataclasses to support:
 - Efficient state diffing
 """
 from dataclasses import dataclass, field
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 
 
 @dataclass(frozen=True)
-class Note:
+class AutomationPoint:
     """
-    MIDI note event.
+    Single automation point for automation curves.
 
     Attributes:
-        note: MIDI note number (0-127)
-        start: Start time in beats
-        duration: Duration in beats
-        velocity: Note velocity (0-127)
-        selected: Whether note is selected in UI
+        tick: Absolute tick position (0 to song length)
+        value: Normalized value (0.0 to 1.0 for CC, -1.0 to 1.0 for pitch bend)
+        curve_type: Interpolation type ("linear", "stepped", "bezier")
     """
-    note: int
-    start: float
-    duration: float
-    velocity: int = 100
-    selected: bool = False
+    tick: int
+    value: float
+    curve_type: str = "linear"
 
     def __post_init__(self):
-        """Validate note values."""
-        if not 0 <= self.note <= 127:
-            raise ValueError(f"Note must be 0-127, got {self.note}")
-        if self.duration <= 0:
-            raise ValueError(f"Duration must be positive, got {self.duration}")
-        if not 0 <= self.velocity <= 127:
-            raise ValueError(f"Velocity must be 0-127, got {self.velocity}")
+        """Validate automation point."""
+        if self.tick < 0:
+            raise ValueError(f"Tick must be non-negative, got {self.tick}")
+        if self.curve_type not in ("linear", "stepped", "bezier"):
+            raise ValueError(f"Invalid curve_type: {self.curve_type}")
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
-            "note": self.note,
-            "start": self.start,
-            "duration": self.duration,
-            "velocity": self.velocity,
-            "selected": self.selected,
+            "tick": self.tick,
+            "value": self.value,
+            "curve_type": self.curve_type,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Note":
-        """Create Note from dictionary."""
+    def from_dict(cls, data: Dict[str, Any]) -> "AutomationPoint":
+        """Create AutomationPoint from dictionary."""
         return cls(
-            note=data["note"],
-            start=data["start"],
-            duration=data["duration"],
-            velocity=data.get("velocity", 100),
-            selected=data.get("selected", False),
+            tick=data["tick"],
+            value=data["value"],
+            curve_type=data.get("curve_type", "linear"),
+        )
+
+
+@dataclass(frozen=True)
+class CCAutomation:
+    """
+    CC (Continuous Controller) automation lane.
+
+    Stores automation curve for a single MIDI CC number (0-127).
+
+    Attributes:
+        cc_number: MIDI CC number (0-127)
+        points: Tuple of AutomationPoint objects (sorted by tick)
+        display_name: Human-readable name (e.g., "Modulation", "Filter Cutoff")
+    """
+    cc_number: int
+    points: Tuple[AutomationPoint, ...] = field(default_factory=tuple)
+    display_name: str = ""
+
+    def __post_init__(self):
+        """Validate CC automation."""
+        if not 0 <= self.cc_number <= 127:
+            raise ValueError(f"CC number must be 0-127, got {self.cc_number}")
+
+        # Verify points are sorted by tick
+        if len(self.points) > 1:
+            for i in range(len(self.points) - 1):
+                if self.points[i].tick >= self.points[i + 1].tick:
+                    raise ValueError("Automation points must be sorted by tick")
+
+    def get_value_at_tick(self, tick: int) -> float:
+        """
+        Get interpolated automation value at a specific tick.
+
+        Args:
+            tick: Tick position to query
+
+        Returns:
+            Interpolated value (0.0-1.0)
+        """
+        if not self.points:
+            return 0.0
+
+        # Before first point: use first value
+        if tick <= self.points[0].tick:
+            return self.points[0].value
+
+        # After last point: use last value
+        if tick >= self.points[-1].tick:
+            return self.points[-1].value
+
+        # Find surrounding points
+        for i in range(len(self.points) - 1):
+            p1, p2 = self.points[i], self.points[i + 1]
+
+            if p1.tick <= tick <= p2.tick:
+                if p1.curve_type == "stepped":
+                    return p1.value
+                elif p1.curve_type == "linear":
+                    # Linear interpolation
+                    t = (tick - p1.tick) / (p2.tick - p1.tick)
+                    return p1.value + t * (p2.value - p1.value)
+                # Bezier curves handled later
+                return p1.value
+
+        return 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "cc_number": self.cc_number,
+            "points": [p.to_dict() for p in self.points],
+            "display_name": self.display_name,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CCAutomation":
+        """Create CCAutomation from dictionary."""
+        points = tuple(AutomationPoint.from_dict(p) for p in data.get("points", []))
+        return cls(
+            cc_number=data["cc_number"],
+            points=points,
+            display_name=data.get("display_name", ""),
+        )
+
+
+@dataclass(frozen=True)
+class PitchBendAutomation:
+    """
+    Pitch bend automation lane.
+
+    MIDI pitch bend is 14-bit (-8192 to +8191 for ±2 semitones by default).
+
+    Attributes:
+        points: Tuple of AutomationPoint objects (value range: -1.0 to +1.0)
+        range_semitones: Pitch bend range in semitones (default 2)
+    """
+    points: Tuple[AutomationPoint, ...] = field(default_factory=tuple)
+    range_semitones: int = 2
+
+    def __post_init__(self):
+        """Validate pitch bend automation."""
+        # Verify points are sorted by tick
+        if len(self.points) > 1:
+            for i in range(len(self.points) - 1):
+                if self.points[i].tick >= self.points[i + 1].tick:
+                    raise ValueError("Automation points must be sorted by tick")
+
+        # Verify values are in range -1.0 to +1.0
+        for point in self.points:
+            if not -1.0 <= point.value <= 1.0:
+                raise ValueError(f"Pitch bend value must be -1.0 to +1.0, got {point.value}")
+
+    def get_value_at_tick(self, tick: int) -> int:
+        """
+        Get interpolated pitch bend value at a specific tick.
+
+        Args:
+            tick: Tick position to query
+
+        Returns:
+            Pitch bend value (-8192 to +8191)
+        """
+        if not self.points:
+            return 0
+
+        # Before first point: use first value
+        if tick <= self.points[0].tick:
+            return int(self.points[0].value * 8192)
+
+        # After last point: use last value
+        if tick >= self.points[-1].tick:
+            return int(self.points[-1].value * 8192)
+
+        # Find surrounding points
+        for i in range(len(self.points) - 1):
+            p1, p2 = self.points[i], self.points[i + 1]
+
+            if p1.tick <= tick <= p2.tick:
+                if p1.curve_type == "stepped":
+                    return int(p1.value * 8192)
+                elif p1.curve_type == "linear":
+                    # Linear interpolation
+                    t = (tick - p1.tick) / (p2.tick - p1.tick)
+                    value = p1.value + t * (p2.value - p1.value)
+                    return int(value * 8192)
+                return int(p1.value * 8192)
+
+        return 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "points": [p.to_dict() for p in self.points],
+            "range_semitones": self.range_semitones,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PitchBendAutomation":
+        """Create PitchBendAutomation from dictionary."""
+        points = tuple(AutomationPoint.from_dict(p) for p in data.get("points", []))
+        return cls(
+            points=points,
+            range_semitones=data.get("range_semitones", 2),
+        )
+
+
+@dataclass(frozen=True)
+class Marker:
+    """
+    Timeline marker for song navigation.
+
+    Attributes:
+        tick: Absolute tick position
+        name: Marker name/label
+        color: RGB color tuple (0-255 per channel)
+    """
+    tick: int
+    name: str
+    color: Tuple[int, int, int] = (255, 255, 0)
+
+    def __post_init__(self):
+        """Validate marker."""
+        if self.tick < 0:
+            raise ValueError(f"Tick must be non-negative, got {self.tick}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "tick": self.tick,
+            "name": self.name,
+            "color": list(self.color),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Marker":
+        """Create Marker from dictionary."""
+        return cls(
+            tick=data["tick"],
+            name=data["name"],
+            color=tuple(data.get("color", [255, 255, 0])),
         )
 
 
@@ -99,6 +290,71 @@ class MeasureMetadata:
             time_signature=tuple(data["time_signature"]),
             bpm=data["bpm"],
             length_ticks=data["length_ticks"],
+        )
+
+
+@dataclass(frozen=True)
+class Note:
+    """
+    MIDI note event with full MIDI compliance.
+
+    Attributes:
+        note: MIDI note number (0-127)
+        start: Start time in beats
+        duration: Duration in beats
+        velocity: Note-on velocity (1-127)
+        selected: Whether note is selected in UI
+        release_velocity: Note-off velocity (0-127, default 64)
+        aftertouch_curve: Optional polyphonic aftertouch automation
+    """
+    note: int
+    start: float
+    duration: float
+    velocity: int = 100
+    selected: bool = False
+    release_velocity: int = 64
+    aftertouch_curve: Optional[Tuple[AutomationPoint, ...]] = None
+
+    def __post_init__(self):
+        """Validate note values."""
+        if not 0 <= self.note <= 127:
+            raise ValueError(f"Note must be 0-127, got {self.note}")
+        if self.duration <= 0:
+            raise ValueError(f"Duration must be positive, got {self.duration}")
+        if not 0 <= self.velocity <= 127:
+            raise ValueError(f"Velocity must be 0-127, got {self.velocity}")
+        if not 0 <= self.release_velocity <= 127:
+            raise ValueError(f"Release velocity must be 0-127, got {self.release_velocity}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        result = {
+            "note": self.note,
+            "start": self.start,
+            "duration": self.duration,
+            "velocity": self.velocity,
+            "selected": self.selected,
+            "release_velocity": self.release_velocity,
+        }
+        if self.aftertouch_curve:
+            result["aftertouch_curve"] = [p.to_dict() for p in self.aftertouch_curve]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Note":
+        """Create Note from dictionary."""
+        aftertouch_curve = None
+        if "aftertouch_curve" in data and data["aftertouch_curve"]:
+            aftertouch_curve = tuple(AutomationPoint.from_dict(p) for p in data["aftertouch_curve"])
+
+        return cls(
+            note=data["note"],
+            start=data["start"],
+            duration=data["duration"],
+            velocity=data.get("velocity", 100),
+            selected=data.get("selected", False),
+            release_velocity=data.get("release_velocity", 64),
+            aftertouch_curve=aftertouch_curve,
         )
 
 
@@ -174,6 +430,15 @@ class Track:
     effects: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
     notes: Tuple[Note, ...] = field(default_factory=tuple)
 
+    # MIDI compliance fields
+    midi_channel: int = 0  # 0-15 (displayed as 1-16 in UI)
+    program_number: int = 0  # 0-127 (MIDI program/patch number)
+    bank_msb: int = 0  # CC0 (bank select MSB)
+    bank_lsb: int = 0  # CC32 (bank select LSB)
+    cc_automation: Tuple[CCAutomation, ...] = field(default_factory=tuple)
+    pitch_bend: Optional[PitchBendAutomation] = None
+    channel_pressure: Tuple[AutomationPoint, ...] = field(default_factory=tuple)
+
     def __post_init__(self):
         """Validate track data and initialize sampler map if empty."""
         # Initialize sampler_map if not provided
@@ -198,7 +463,7 @@ class Track:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
+        result = {
             "name": self.name,
             "mode": self.mode,
             "is_drum": self.is_drum,
@@ -215,7 +480,16 @@ class Track:
             "solo": self.solo,
             "effects": list(self.effects),
             "notes": [n.to_dict() for n in self.notes],
+            "midi_channel": self.midi_channel,
+            "program_number": self.program_number,
+            "bank_msb": self.bank_msb,
+            "bank_lsb": self.bank_lsb,
+            "cc_automation": [cc.to_dict() for cc in self.cc_automation],
+            "channel_pressure": [p.to_dict() for p in self.channel_pressure],
         }
+        if self.pitch_bend:
+            result["pitch_bend"] = self.pitch_bend.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Track":
@@ -227,6 +501,17 @@ class Track:
 
         # Convert notes
         notes = tuple(Note.from_dict(n) for n in data.get("notes", []))
+
+        # Convert CC automation
+        cc_automation = tuple(CCAutomation.from_dict(cc) for cc in data.get("cc_automation", []))
+
+        # Convert pitch bend
+        pitch_bend = None
+        if "pitch_bend" in data and data["pitch_bend"]:
+            pitch_bend = PitchBendAutomation.from_dict(data["pitch_bend"])
+
+        # Convert channel pressure
+        channel_pressure = tuple(AutomationPoint.from_dict(p) for p in data.get("channel_pressure", []))
 
         return cls(
             name=data.get("name", "Track"),
@@ -245,6 +530,13 @@ class Track:
             solo=data.get("solo", False),
             effects=tuple(data.get("effects", [])),
             notes=notes,
+            midi_channel=data.get("midi_channel", 0),
+            program_number=data.get("program_number", 0),
+            bank_msb=data.get("bank_msb", 0),
+            bank_lsb=data.get("bank_lsb", 0),
+            cc_automation=cc_automation,
+            pitch_bend=pitch_bend,
+            channel_pressure=channel_pressure,
         )
 
 
@@ -272,6 +564,12 @@ class Song:
     file_path: Optional[str] = None
     measure_metadata: Optional[Tuple[MeasureMetadata, ...]] = None
 
+    # MIDI compliance fields
+    key_signature: Tuple[int, int] = (0, 0)  # (sharps/flats [-7 to +7], major/minor [0=major, 1=minor])
+    markers: Tuple[Marker, ...] = field(default_factory=tuple)
+    send_midi_clock: bool = False
+    receive_midi_clock: bool = False
+
     def __post_init__(self):
         """Validate song structure."""
         if self.bpm <= 0:
@@ -292,6 +590,10 @@ class Song:
             "length_ticks": self.length_ticks,
             "tracks": [t.to_dict() for t in self.tracks],
             "file_path": self.file_path,
+            "key_signature": list(self.key_signature),
+            "markers": [m.to_dict() for m in self.markers],
+            "send_midi_clock": self.send_midi_clock,
+            "receive_midi_clock": self.receive_midi_clock,
         }
         # Add measure_metadata if present
         if self.measure_metadata:
@@ -310,6 +612,9 @@ class Song:
                 MeasureMetadata.from_dict(m) for m in data["measure_metadata"]
             )
 
+        # Parse markers
+        markers = tuple(Marker.from_dict(m) for m in data.get("markers", []))
+
         return cls(
             name=data.get("name", "Untitled"),
             bpm=float(data.get("bpm", 120.0)),
@@ -319,6 +624,10 @@ class Song:
             length_ticks=data.get("length_ticks", 1920),
             file_path=data.get("file_path"),
             measure_metadata=measure_metadata,
+            key_signature=tuple(data.get("key_signature", (0, 0))),
+            markers=markers,
+            send_midi_clock=data.get("send_midi_clock", False),
+            receive_midi_clock=data.get("receive_midi_clock", False),
         )
 
 
@@ -347,7 +656,8 @@ class AppState:
     def set_current_song(self, song: Song):
         """Set current song."""
         self._current_song = song
-        self._is_dirty = False
+        # Don't automatically reset dirty flag - preserve current state
+        # Dirty flag should only be cleared via explicit mark_clean() calls
 
     def get_playback_position(self) -> float:
         """Get current playback position in beats."""

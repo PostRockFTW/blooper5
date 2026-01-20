@@ -76,7 +76,7 @@ def main():
     apply_vscode_theme()
 
     # Setup viewport
-    dpg.create_viewport(title="Blooper5", width=900, height=700)
+    dpg.create_viewport(title="Blooper5", width=1400, height=900)
     dpg.setup_dearpygui()
     dpg.show_viewport()
 
