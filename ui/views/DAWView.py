@@ -16,6 +16,7 @@ import threading
 import time
 import dataclasses
 import math
+import queue
 from ui.widgets.MixerStrip import MixerStrip
 from ui.widgets.PianoRoll import PianoRoll
 from ui.widgets.NoteDrawToolbar import NoteDrawToolbar
@@ -23,6 +24,7 @@ from plugins.sources.dual_osc import DualOscillator
 from plugins.base import ProcessContext
 from core.models import Note, AppState
 from audio.scheduler import NoteScheduler
+from midi.handler import MIDIHandler
 
 
 class DAWView:
@@ -76,6 +78,25 @@ class DAWView:
         self.dual_osc = DualOscillator()
         self.playback_thread = None
         self.playback_lock = threading.Lock()
+
+        # MIDI sync
+        self.midi_handler = None  # Initialized when playback starts
+
+        # Thread-safe queue for playhead position jumps during playback
+        self.playhead_jump_queue = queue.Queue(maxsize=10)
+
+        # Live MIDI input state
+        # Key: (track_idx, note_number), Value: {'velocity': int, 'start_tick': int}
+        self.active_live_notes = {}
+
+        # MIDI learn state
+        self.midi_learn_active = False
+        self.midi_learn_function = None  # Which function we're learning
+        self.last_midi_message = None  # For learn mode feedback
+
+        # CC button hold state tracking for continuous actions
+        # Key: (function_name, cc_number), Value: {'pressed_time': float, 'last_action_time': float}
+        self.held_transport_buttons = {}
 
         # Mixer state
         self.mixer_visible = True
@@ -186,7 +207,8 @@ class DAWView:
                         self.piano_roll = PianoRoll(
                             width=self.left_panel_width-10,
                             height=400,
-                            on_notes_changed=self._on_piano_roll_notes_changed
+                            on_notes_changed=self._on_piano_roll_notes_changed,
+                            on_loop_markers_changed=self._on_loop_markers_changed
                         )
                         self.piano_roll.create_inline(parent="piano_roll_panel")
 
@@ -1208,6 +1230,14 @@ class DAWView:
                 callback=self._on_play,
                 width=50, height=40
             )
+            dpg.add_button(
+                label="Learn",
+                callback=lambda: self._start_midi_learn('play'),
+                tag="learn_play_button",
+                width=50, height=20
+            )
+
+            dpg.add_spacer(width=10)
 
             # Stop button
             dpg.add_button(
@@ -1215,6 +1245,14 @@ class DAWView:
                 callback=self._on_stop,
                 width=50, height=40
             )
+            dpg.add_button(
+                label="Learn",
+                callback=lambda: self._start_midi_learn('stop'),
+                tag="learn_stop_button",
+                width=50, height=20
+            )
+
+            dpg.add_spacer(width=10)
 
             # Record button
             dpg.add_button(
@@ -1222,6 +1260,42 @@ class DAWView:
                 tag="daw_record_button",
                 callback=self._on_record,
                 width=50, height=40
+            )
+            dpg.add_button(
+                label="Learn",
+                callback=lambda: self._start_midi_learn('record'),
+                tag="learn_record_button",
+                width=50, height=20
+            )
+
+            dpg.add_spacer(width=10)
+
+            # Rewind button (mapped to "forward" for MPK25 compatibility)
+            dpg.add_button(
+                label="<<",
+                callback=self._on_forward,
+                width=40, height=40
+            )
+            dpg.add_button(
+                label="Learn",
+                callback=lambda: self._start_midi_learn('forward'),
+                tag="learn_forward_button",
+                width=40, height=20
+            )
+
+            dpg.add_spacer(width=10)
+
+            # Fast-forward button (mapped to "backward" for MPK25 compatibility)
+            dpg.add_button(
+                label=">>",
+                callback=self._on_backward,
+                width=40, height=40
+            )
+            dpg.add_button(
+                label="Learn",
+                callback=lambda: self._start_midi_learn('backward'),
+                tag="learn_backward_button",
+                width=40, height=20
             )
 
             dpg.add_spacer(width=20)
@@ -1357,6 +1431,32 @@ class DAWView:
             # Update current_song_id to match the new song object
             self.current_song_id = id(updated_song)
 
+    def _on_loop_markers_changed(self, start_tick: int, end_tick):
+        """Called when loop markers are dragged in Piano Roll."""
+        song = self.app_state.get_current_song()
+        if not song:
+            return
+
+        # Update song with new loop positions
+        loop_enabled = (end_tick is not None)
+        updated_song = dataclasses.replace(
+            song,
+            loop_start_tick=start_tick,
+            loop_end_tick=end_tick,
+            loop_enabled=loop_enabled
+        )
+
+        self.app_state.set_current_song(updated_song)
+        self.app_state._is_dirty = True
+
+        # Update current_song_id to match the new song object
+        self.current_song_id = id(updated_song)
+
+        # Sync the is_looping flag and checkbox with the song state
+        self.is_looping = loop_enabled
+        if dpg.does_item_exist("daw_loop_toggle"):
+            dpg.set_value("daw_loop_toggle", loop_enabled)
+
     def _on_play(self):
         """Start/pause playback."""
         self.is_playing = not self.is_playing
@@ -1371,9 +1471,19 @@ class DAWView:
             print(f"[PLAY] Playback started at {self.bpm} BPM")
             dpg.set_item_label("daw_play_button", "Pause")
             self._start_playback()
+
+            # Send MIDI Start message
+            song = self.app_state.get_current_song()
+            if song and song.send_midi_clock and self.midi_handler and self.midi_handler.midi_out:
+                self.midi_handler.send_start()
         else:
             print("[PAUSE] Playback paused")
             dpg.set_item_label("daw_play_button", "Play")
+
+            # Send MIDI Stop message
+            if self.midi_handler and self.midi_handler.midi_out:
+                self.midi_handler.send_stop()
+
             self._stop_playback()
 
     def _on_stop(self):
@@ -1390,6 +1500,10 @@ class DAWView:
             dpg.set_value("daw_bpm_input", int(self.bpm))
         dpg.set_item_label("daw_play_button", "Play")
         if was_playing:
+            # Send MIDI Stop message
+            if self.midi_handler and self.midi_handler.midi_out:
+                self.midi_handler.send_stop()
+
             self._stop_playback()
         self._update_time_display()
 
@@ -1401,6 +1515,385 @@ class DAWView:
         """Toggle recording."""
         self.is_recording = not self.is_recording
         print(f"[REC] Recording: {'ON' if self.is_recording else 'OFF'}")
+
+    def _find_measure_at_tick(self, tick: float, song) -> int:
+        """Find which measure index contains the given tick."""
+        if not song or not song.measure_metadata:
+            # Fallback: use global time signature
+            ticks_per_measure = song.tpqn * song.time_signature[0] * (4 / song.time_signature[1])
+            return int(tick / ticks_per_measure)
+
+        # Use measure_metadata for accurate boundaries
+        for i, measure in enumerate(song.measure_metadata):
+            if measure.start_tick <= tick < measure.start_tick + measure.length_ticks:
+                return i
+
+        # If beyond last measure, return last measure index
+        if song.measure_metadata:
+            return len(song.measure_metadata) - 1
+        return 0
+
+    def _get_measure_start_tick(self, measure_index: int, song) -> int:
+        """Get the start tick of a measure."""
+        if not song or not song.measure_metadata:
+            # Fallback: use global time signature
+            ticks_per_measure = song.tpqn * song.time_signature[0] * (4 / song.time_signature[1])
+            return measure_index * ticks_per_measure
+
+        # Use measure_metadata
+        if 0 <= measure_index < len(song.measure_metadata):
+            return song.measure_metadata[measure_index].start_tick
+
+        return 0
+
+    def _on_forward(self, first_press=False):
+        """Skip backward to previous measure (MPK25 REW/CC115 mapped here).
+
+        Args:
+            first_press: True on initial button press, False for continuous hold actions
+        """
+        song = self.app_state.get_current_song()
+        if not song:
+            return
+
+        # Find current measure
+        current_measure_index = self._find_measure_at_tick(self.current_tick, song)
+        current_measure_start = self._get_measure_start_tick(current_measure_index, song)
+
+        if self.is_playing:
+            # During playback: first press snaps to current measure, hold continues to previous
+            if first_press:
+                # First press: always snap to current measure start
+                new_tick = current_measure_start
+            else:
+                # Continuous hold: go to previous measure
+                if current_measure_index > 0:
+                    new_tick = self._get_measure_start_tick(current_measure_index - 1, song)
+                else:
+                    new_tick = 0  # Already at first measure
+        else:
+            # When stopped: use snap threshold for smart behavior
+            SNAP_THRESHOLD = 10
+
+            # If we're significantly past the measure start, snap to current measure start
+            if self.current_tick - current_measure_start > SNAP_THRESHOLD:
+                new_tick = current_measure_start
+            else:
+                # We're at (or very close to) the measure start, go to previous measure
+                if current_measure_index > 0:
+                    new_tick = self._get_measure_start_tick(current_measure_index - 1, song)
+                else:
+                    new_tick = 0  # Already at first measure
+
+        # Clamp to valid range
+        new_tick = max(0, new_tick)
+        self.current_tick = new_tick
+
+        # Update piano roll playhead
+        if self.piano_roll:
+            self.piano_roll.set_playhead_tick(new_tick)
+
+        # If playing, also jump the scheduler position
+        if self.is_playing:
+            try:
+                self.playhead_jump_queue.put_nowait(new_tick)
+            except queue.Full:
+                print("[TRANSPORT] Warning: Jump queue full, ignoring request")
+
+        print(f"[TRANSPORT] Backward to tick {int(new_tick)}")
+
+    def _on_backward(self, first_press=False):
+        """Skip forward to next measure (MPK25 FF/CC116 mapped here).
+
+        Args:
+            first_press: True on initial button press, False for continuous hold actions
+        """
+        song = self.app_state.get_current_song()
+        if not song:
+            return
+
+        # Find current measure
+        current_measure_index = self._find_measure_at_tick(self.current_tick, song)
+        current_measure_start = self._get_measure_start_tick(current_measure_index, song)
+
+        if self.is_playing:
+            # During playback: always go to next measure (both tap and hold)
+            if not song.measure_metadata:
+                # Fallback: calculate using global time signature
+                ticks_per_measure = song.tpqn * song.time_signature[0] * (4 / song.time_signature[1])
+                total_measures = int((song.length_ticks + ticks_per_measure - 1) / ticks_per_measure)
+
+                if current_measure_index + 1 < total_measures:
+                    new_tick = self._get_measure_start_tick(current_measure_index + 1, song)
+                else:
+                    new_tick = song.length_ticks  # At end
+            else:
+                # Use measure_metadata
+                if current_measure_index + 1 < len(song.measure_metadata):
+                    new_tick = song.measure_metadata[current_measure_index + 1].start_tick
+                else:
+                    new_tick = song.length_ticks  # At end
+        else:
+            # When stopped: always go to next measure (existing behavior)
+            if not song.measure_metadata:
+                # Fallback: calculate using global time signature
+                ticks_per_measure = song.tpqn * song.time_signature[0] * (4 / song.time_signature[1])
+                total_measures = int((song.length_ticks + ticks_per_measure - 1) / ticks_per_measure)
+
+                if current_measure_index + 1 < total_measures:
+                    new_tick = self._get_measure_start_tick(current_measure_index + 1, song)
+                else:
+                    new_tick = song.length_ticks  # At end
+            else:
+                # Use measure_metadata
+                if current_measure_index + 1 < len(song.measure_metadata):
+                    new_tick = song.measure_metadata[current_measure_index + 1].start_tick
+                else:
+                    new_tick = song.length_ticks  # At end
+
+        # Clamp to valid range
+        new_tick = min(new_tick, song.length_ticks)
+        self.current_tick = new_tick
+
+        # Update piano roll playhead
+        if self.piano_roll:
+            self.piano_roll.set_playhead_tick(new_tick)
+
+        # If playing, also jump the scheduler position
+        if self.is_playing:
+            try:
+                self.playhead_jump_queue.put_nowait(new_tick)
+            except queue.Full:
+                print("[TRANSPORT] Warning: Jump queue full, ignoring request")
+
+        print(f"[TRANSPORT] Forward to tick {int(new_tick)}")
+
+    def _process_control_event(self, event: dict):
+        """
+        Process MIDI control event (CC, MMC, Note, etc.).
+
+        Two modes:
+        1. Learn Mode: Capture event and create mapping
+        2. Normal Mode: Check mappings and trigger functions
+        """
+        song = self.app_state.get_current_song()
+        if not song:
+            return
+
+        # Learn Mode: Capture this message
+        if self.midi_learn_active:
+            self._capture_midi_learn(event)
+            return
+
+        # Normal Mode: Check mappings
+        from core.models import MIDIControlMapping
+        import time
+
+        for mapping in song.midi_control_mappings:
+            if mapping.matches_message(event):
+                value = self._get_event_value(event)
+
+                # For transport controls (forward/backward), track hold state
+                if mapping.function in ['forward', 'backward']:
+                    cc_num = event.get('controller', -1)
+                    key = (mapping.function, cc_num)
+
+                    if value >= mapping.trigger_threshold:
+                        current_time = time.time()
+                        # Button pressed or still held (repeated messages)
+                        if key not in self.held_transport_buttons:
+                            # First press - record timestamp and trigger immediate action
+                            self.held_transport_buttons[key] = {
+                                'pressed_time': current_time,
+                                'last_action_time': current_time,
+                                'last_message_time': current_time
+                            }
+                            # Trigger immediate first action
+                            self._trigger_transport_function(mapping.function, first_press=True)
+                            print(f"[MIDI CTRL] {mapping.function.upper()} pressed (ch {event.get('channel', 'omni')})")
+                        else:
+                            # Button still held - update last message time
+                            self.held_transport_buttons[key]['last_message_time'] = current_time
+                    else:
+                        # Button released - clear hold state
+                        if key in self.held_transport_buttons:
+                            del self.held_transport_buttons[key]
+                            print(f"[MIDI CTRL] {mapping.function.upper()} released")
+                else:
+                    # Non-transport controls: immediate trigger as before
+                    if value >= mapping.trigger_threshold:
+                        self._trigger_function(mapping.function)
+                        print(f"[MIDI CTRL] {mapping.function.upper()} triggered by {event['type']} "
+                              f"(ch {event.get('channel', 'omni')})")
+
+    def _get_event_value(self, event: dict) -> int:
+        """Extract value from event (for threshold check)."""
+        if event['type'] == 'cc':
+            return event.get('value', 0)
+        elif event['type'] == 'note_on':
+            return event.get('velocity', 0)
+        elif event['type'] == 'mmc':
+            return 127  # MMC always triggers (no velocity)
+        elif event['type'] == 'program_change':
+            return 127  # Program change always triggers
+        return 0
+
+    def _trigger_function(self, function: str):
+        """Trigger a DAW function (play, stop, record, etc.)."""
+        if function == 'play':
+            self._on_play()
+        elif function == 'stop':
+            self._on_stop()
+        elif function == 'record':
+            self._on_record()
+        elif function == 'forward':
+            self._on_forward()
+        elif function == 'backward':
+            self._on_backward()
+        else:
+            print(f"[MIDI CTRL] Unknown function: {function}")
+
+    def _trigger_transport_function(self, function: str, first_press: bool = False):
+        """Trigger a transport function with first_press awareness.
+
+        Args:
+            function: 'forward' or 'backward'
+            first_press: True on initial button press, False for continuous hold actions
+        """
+        if function == 'forward':
+            self._on_forward(first_press=first_press)
+        elif function == 'backward':
+            self._on_backward(first_press=first_press)
+
+    def _capture_midi_learn(self, event: dict):
+        """Capture MIDI event in learn mode and create mapping."""
+        import dataclasses
+        from core.models import MIDIControlMapping
+
+        self.last_midi_message = event
+
+        # Create mapping from captured event
+        mapping = self._create_mapping_from_event(
+            function=self.midi_learn_function,
+            event=event
+        )
+
+        # Add to song
+        song = self.app_state.get_current_song()
+        updated_mappings = list(song.midi_control_mappings) + [mapping]
+
+        updated_song = dataclasses.replace(
+            song,
+            midi_control_mappings=tuple(updated_mappings)
+        )
+
+        self.app_state.set_current_song(updated_song)
+        self.app_state.mark_dirty()
+
+        # Exit learn mode
+        self.midi_learn_active = False
+        self.midi_learn_function = None
+
+        print(f"[MIDI LEARN] Mapped {event['type']} to {mapping.function}")
+
+        # Update UI to show mapping learned
+        self._update_midi_learn_ui()
+
+    def _create_mapping_from_event(self, function: str, event: dict):
+        """Create a MIDIControlMapping from a captured event."""
+        from core.models import MIDIControlMapping
+
+        mapping_args = {
+            'function': function,
+            'message_type': event['type'],
+            'channel': event.get('channel'),  # None = omni
+        }
+
+        if event['type'] == 'cc':
+            mapping_args['cc_number'] = event['controller']
+        elif event['type'] == 'note_on':
+            mapping_args['note_number'] = event['note']
+            mapping_args['message_type'] = 'note'  # Normalize to 'note'
+        elif event['type'] == 'mmc':
+            mapping_args['mmc_command'] = event['mmc_command']
+        elif event['type'] == 'program_change':
+            mapping_args['program_number'] = event['program']
+
+        return MIDIControlMapping(**mapping_args)
+
+    def _start_midi_learn(self, function: str):
+        """Start MIDI learn mode for a function, or clear existing mapping."""
+        import dataclasses
+
+        song = self.app_state.get_current_song()
+        if not song:
+            return
+
+        # Check if mapping already exists
+        existing_mapping = next(
+            (m for m in song.midi_control_mappings if m.function == function),
+            None
+        )
+
+        if existing_mapping:
+            # Clear existing mapping
+            updated_mappings = [m for m in song.midi_control_mappings if m.function != function]
+            updated_song = dataclasses.replace(
+                song,
+                midi_control_mappings=tuple(updated_mappings)
+            )
+            self.app_state.set_current_song(updated_song)
+            self.app_state.mark_dirty()
+
+            print(f"[MIDI LEARN] Cleared mapping for {function.upper()}")
+
+            # Update UI
+            self._update_midi_learn_ui()
+        else:
+            # Start learn mode
+            self.midi_learn_active = True
+            self.midi_learn_function = function
+
+            print(f"[MIDI LEARN] Press a button/knob on your MIDI controller to map to {function.upper()}")
+
+            # Visual feedback - highlight the learn button
+            if dpg.does_item_exist(f"learn_{function}_button"):
+                dpg.configure_item(f"learn_{function}_button", label="Listening...")
+
+    def _update_midi_learn_ui(self):
+        """Update UI to show current MIDI mappings."""
+        song = self.app_state.get_current_song()
+        if not song:
+            return
+
+        # For each transport function, show what's mapped
+        for function in ['play', 'stop', 'record', 'forward', 'backward']:
+            # Find mapping for this function
+            mapping = next(
+                (m for m in song.midi_control_mappings if m.function == function),
+                None
+            )
+
+            # Update learn button label
+            button_tag = f"learn_{function}_button"
+            if dpg.does_item_exist(button_tag):
+                if mapping:
+                    label = self._get_mapping_label(mapping)
+                    dpg.configure_item(button_tag, label=label)
+                else:
+                    dpg.configure_item(button_tag, label="Learn")
+
+    def _get_mapping_label(self, mapping) -> str:
+        """Get short label describing a mapping."""
+        if mapping.message_type == 'cc':
+            return f"CC{mapping.cc_number}"
+        elif mapping.message_type == 'note':
+            return f"Note{mapping.note_number}"
+        elif mapping.message_type == 'mmc':
+            return "MMC"
+        elif mapping.message_type == 'program_change':
+            return f"Prog{mapping.program_number}"
+        return "Mapped"
 
     def _on_bpm_change(self, sender, bpm):
         """Handle BPM change."""
@@ -1415,6 +1908,17 @@ class DAWView:
     def _on_loop_toggle(self, sender, value):
         """Toggle loop mode."""
         self.is_looping = value
+
+        # Update song's loop_enabled flag
+        song = self.app_state.get_current_song()
+        if song:
+            updated_song = dataclasses.replace(song, loop_enabled=value)
+            self.app_state.set_current_song(updated_song)
+            self.app_state._is_dirty = True
+
+            # Update current_song_id to match the new song object
+            self.current_song_id = id(updated_song)
+
         print(f"Loop: {'ON' if self.is_looping else 'OFF'}")
 
     def _on_metronome_toggle(self, sender, value):
@@ -1512,6 +2016,26 @@ class DAWView:
         # Mark Piano Roll notes as belonging to this project (prevents cross-project pollution)
         self.current_song_id = id(song)
 
+        # Load loop markers from song
+        if song and self.piano_roll:
+            # If no loop_end_tick is set, default to full track length
+            loop_end = song.loop_end_tick if song.loop_end_tick is not None else song.length_ticks
+
+            self.piano_roll.loop_start_tick = song.loop_start_tick
+            self.piano_roll.loop_end_tick = loop_end
+
+            # Update loop toggle and sync is_looping state
+            self.is_looping = song.loop_enabled
+            if dpg.does_item_exist("daw_loop_toggle"):
+                dpg.set_value("daw_loop_toggle", song.loop_enabled)
+
+        # Update MIDI learn UI to show current mappings
+        self._update_midi_learn_ui()
+
+        # Initialize MIDI handler for MIDI Learn (if not already done)
+        if initial_load:
+            self._ensure_midi_handler_initialized()
+
     def _on_mixer_value_change(self, channel_index: int, param_name: str, value):
         """
         Handle mixer value changes (volume, pan, mute, solo, fx_enabled).
@@ -1528,8 +2052,50 @@ class DAWView:
 
     # Audio Playback Engine
 
+    def _ensure_midi_handler_initialized(self):
+        """
+        Initialize MIDI handler if not already done.
+
+        Called after song is loaded, ensuring MIDI Learn works without starting playback.
+        Respects song settings (receive_midi_clock, send_midi_clock, track MIDI input).
+        """
+        song = self.app_state.get_current_song()
+        if song and self.midi_handler is None:
+            try:
+                # Always initialize handler (gracefully handles missing devices)
+                self.midi_handler = MIDIHandler()
+
+                # Decide what to open based on song settings
+                needs_midi_input = (
+                    song.receive_midi_clock or
+                    any(track.receive_midi_input for track in song.tracks) or
+                    True  # Always open input for MIDI Learn
+                )
+                needs_midi_output = song.send_midi_clock
+
+                if needs_midi_input:
+                    # TODO: Make device configurable via settings
+                    input_device = "Akai MPK25 0"
+                    self.midi_handler.open_input(input_device)
+                    if self.midi_handler.input_opened:
+                        print(f"[MIDI INPUT] Opened for MIDI Learn and live notes: {input_device}")
+                    else:
+                        print(f"[MIDI INPUT] Failed to open: {input_device}")
+
+                if needs_midi_output:
+                    self.midi_handler.open_output()
+                    if self.midi_handler.output_opened:
+                        print("[MIDI OUTPUT] Opened for clock sync")
+
+            except Exception as e:
+                print(f"[MIDI] Failed to initialize: {e}")
+                self.midi_handler = None
+
     def _start_playback(self):
         """Start audio playback thread."""
+        # Ensure MIDI handler is initialized (safety check)
+        self._ensure_midi_handler_initialized()
+
         if self.playback_thread is None or not self.playback_thread.is_alive():
             self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
             self.playback_thread.start()
@@ -1539,6 +2105,79 @@ class DAWView:
         # Thread will exit when it sees is_playing is False
         if self.playback_thread and self.playback_thread.is_alive():
             self.playback_thread.join(timeout=1.0)
+
+        # Note: Keep MIDI handler open for MIDI Learn and transport control
+        # It will be closed when the DAW closes (if needed)
+
+    def _process_midi_event(self, event, current_tick, song):
+        """
+        Route MIDI events to appropriate tracks based on channel and note range.
+
+        Args:
+            event: MIDI event dictionary from note_event_queue
+            current_tick: Current playback tick position
+            song: Current song object
+        """
+        channel = event['channel']  # 0-15 (0-indexed)
+        event_type = event['type']
+
+        # Find tracks listening on this channel with MIDI input enabled
+        for track_idx, track in enumerate(song.tracks):
+            if not track.receive_midi_input:
+                continue
+
+            if track.midi_channel != channel:
+                continue
+
+            # Check note range filtering (for keyboard vs pads)
+            if event_type in ['note_on', 'note_off']:
+                note = event['note']
+                if note < track.midi_note_min or note > track.midi_note_max:
+                    continue
+
+            # Process event based on type
+            if event_type == 'note_on':
+                velocity = event['velocity']
+                if velocity > 0:
+                    # Note On - add to active live notes
+                    key = (track_idx, note)
+                    self.active_live_notes[key] = {
+                        'velocity': velocity,
+                        'start_tick': current_tick
+                    }
+                    print(f"[MIDI IN] Ch {channel+1} | Note ON  {note} | Vel {velocity:3d} -> Track {track_idx}")
+                else:
+                    # Note Off (velocity 0)
+                    key = (track_idx, note)
+                    if key in self.active_live_notes:
+                        del self.active_live_notes[key]
+                        print(f"[MIDI IN] Ch {channel+1} | Note OFF {note} -> Track {track_idx}")
+
+            elif event_type == 'note_off':
+                note = event['note']
+                key = (track_idx, note)
+                if key in self.active_live_notes:
+                    del self.active_live_notes[key]
+                    print(f"[MIDI IN] Ch {channel+1} | Note OFF {note} -> Track {track_idx}")
+
+            elif event_type == 'channel_aftertouch':
+                # Channel aftertouch - could modulate synth parameters
+                pressure = event['pressure']
+                print(f"[MIDI IN] Ch {channel+1} | Aftertouch {pressure:3d}")
+                # TODO: Apply to all active notes on this track
+
+            elif event_type == 'poly_aftertouch':
+                # Polyphonic aftertouch - per-note pressure
+                note = event['note']
+                pressure = event['pressure']
+                print(f"[MIDI IN] Ch {channel+1} | Poly AT Note {note} | Pressure {pressure:3d}")
+                # TODO: Apply to specific note
+
+            elif event_type == 'cc':
+                cc_num = event['controller']
+                cc_value = event['value']
+                print(f"[MIDI IN] Ch {channel+1} | CC {cc_num:3d} = {cc_value:3d}")
+                # TODO: Map to synth parameters
 
     def _playback_worker(self):
         """Worker thread with real-time note triggering (Blooper4-style)."""
@@ -1552,9 +2191,11 @@ class DAWView:
             # Create scheduler with per-measure tempo support
             scheduler = NoteScheduler(
                 sample_rate=self.sample_rate,
-                measure_metadata=measure_metadata
+                measure_metadata=measure_metadata,
+                initial_tick=self.current_tick  # Start from UI playhead position
             )
             scheduler.bpm = self.bpm  # Fallback BPM if no measure_metadata
+            print(f"[PLAYBACK] Starting from tick {int(self.current_tick)}")
 
             # Get synth parameters (these apply to all triggered notes)
             synth_params = self._get_synth_params()
@@ -1570,6 +2211,34 @@ class DAWView:
                     outdata[:] = 0
                     return
 
+                # Check for incoming SPP messages
+                song = self.app_state.get_current_song()
+                if song and song.receive_midi_clock and self.midi_handler:
+                    incoming_tick = self.midi_handler.get_spp_from_queue()
+                    if incoming_tick is not None:
+                        print(f"[MIDI SPP] Jumping to tick {incoming_tick}")
+
+                        # Jump to received position
+                        scheduler.current_tick = float(incoming_tick)
+
+                        # Clear active voices to prevent audio bleeding
+                        active_voices = []
+
+                # Check for position jump requests from transport controls
+                try:
+                    jump_to_tick = self.playhead_jump_queue.get_nowait()
+                    scheduler.current_tick = jump_to_tick
+                    self.current_tick = jump_to_tick
+                    print(f"[PLAYBACK] Jumped to tick {int(jump_to_tick)}")
+                except queue.Empty:
+                    pass
+
+                # Process incoming MIDI note events
+                if song and self.midi_handler and self.midi_handler.input_opened:
+                    note_events = self.midi_handler.get_note_events()
+                    for event in note_events:
+                        self._process_midi_event(event, int(scheduler.current_tick), song)
+
                 # Advance scheduler
                 prev_tick = scheduler.current_tick
                 scheduler.advance(frames)
@@ -1581,6 +2250,45 @@ class DAWView:
                 if not song:
                     outdata[:] = 0
                     return
+
+                # === LOOP HANDLING ===
+                looped_this_frame = False
+
+                # Get effective loop end (default to song length if not set)
+                loop_end_tick = song.loop_end_tick if song.loop_end_tick is not None else song.length_ticks
+
+                # Debug: Print loop state every 100 frames to avoid spam
+                if hasattr(self, '_loop_debug_counter'):
+                    self._loop_debug_counter += 1
+                else:
+                    self._loop_debug_counter = 0
+
+                if self._loop_debug_counter % 100 == 0:
+                    print(f"[LOOP DEBUG] is_looping={self.is_looping}, song.loop_enabled={song.loop_enabled if song else None}, "
+                          f"loop_start={song.loop_start_tick if song else None}, loop_end={song.loop_end_tick if song else None}, "
+                          f"effective_loop_end={loop_end_tick}, curr_tick={int(curr_tick)}")
+
+                if song and self.is_looping and song.loop_enabled and loop_end_tick:
+                    if curr_tick >= loop_end_tick:
+                        print(f"[LOOP] Looping back! curr_tick={int(curr_tick)} >= loop_end={loop_end_tick}")
+
+                        # Calculate overshoot
+                        overshoot_ticks = curr_tick - loop_end_tick
+
+                        # Jump back to loop start
+                        scheduler.current_tick = song.loop_start_tick + overshoot_ticks
+                        curr_tick = scheduler.current_tick
+                        looped_this_frame = True
+
+                        # Clear active voices to prevent audio bleeding
+                        active_voices = []
+
+                        # Send MIDI SPP on loop jump
+                        if song.send_midi_clock and self.midi_handler and self.midi_handler.midi_out:
+                            try:
+                                self.midi_handler.send_spp(int(scheduler.current_tick), scheduler.tpqn)
+                            except Exception as e:
+                                print(f"[MIDI] Error sending SPP: {e}")
 
                 # Collect ALL notes from all 16 tracks with track index
                 all_notes_with_tracks = []
@@ -1617,7 +2325,18 @@ class DAWView:
                     note_tick = note.start * scheduler.tpqn
 
                     # Check if note triggers in this window
-                    if prev_tick <= note_tick < curr_tick:
+                    should_trigger = False
+                    if not looped_this_frame:
+                        # Normal trigger check
+                        if prev_tick <= note_tick < curr_tick:
+                            should_trigger = True
+                    else:
+                        # If we looped, check segment from loop_start to curr_tick
+                        loop_start = song.loop_start_tick
+                        if loop_start <= note_tick < curr_tick:
+                            should_trigger = True
+
+                    if should_trigger:
                         # Generate full audio for this note
                         audio = self.dual_osc.process(None, synth_params, note, context)
 
@@ -1632,9 +2351,60 @@ class DAWView:
 
                 active_voices.extend(triggered)
 
-                # Mix all active voices into output buffer (stereo)
+                # Initialize output buffers (stereo)
                 output_left = np.zeros(frames, dtype=np.float32)
                 output_right = np.zeros(frames, dtype=np.float32)
+
+                # Render active live MIDI notes (from real-time input)
+                # Create temporary Note objects and generate audio chunks
+                for (track_idx, note_num), note_data in list(self.active_live_notes.items()):
+                    # Get track and mixer strip
+                    track = song.tracks[track_idx]
+                    mixer_strip = self.mixer_strips[track_idx]
+
+                    # Check mute/solo state
+                    if mixer_strip.muted:
+                        continue
+
+                    if any_solo_active and not mixer_strip.solo:
+                        continue
+
+                    # Create temporary Note object for synth (live notes don't have fixed duration)
+                    # We'll use a long duration and manually stop on note off
+                    live_note = Note(
+                        note=note_num,
+                        start=0,  # Not used for live notes
+                        duration=100.0,  # Very long duration (manually stopped on note off)
+                        velocity=note_data['velocity']
+                    )
+
+                    # Get synth parameters for this track
+                    track_synth_params = track.source_params.copy() if hasattr(track, 'source_params') else synth_params
+
+                    # Generate audio chunk for this frame only (streaming mode)
+                    # We'll generate exactly `frames` samples to fill this buffer
+                    live_audio = self.dual_osc.process(None, track_synth_params, live_note, context)
+
+                    # Only take the samples we need for this frame
+                    samples_to_use = min(len(live_audio), frames)
+                    audio_chunk = live_audio[:samples_to_use]
+
+                    # Apply volume and pan, then add directly to output buffers
+                    volume = mixer_strip.volume
+                    pan = mixer_strip.pan
+
+                    # Apply pan (0.0 = left, 0.5 = center, 1.0 = right)
+                    pan_angle = pan * (math.pi / 2)
+                    left_gain = math.cos(pan_angle)
+                    right_gain = math.sin(pan_angle)
+
+                    # Mix into output buffer
+                    if samples_to_use > 0:
+                        output_left[:samples_to_use] += audio_chunk * volume * left_gain
+                        output_right[:samples_to_use] += audio_chunk * volume * right_gain
+
+                # Mix Piano Roll voices into output buffer (stereo)
+                # (output buffers already initialized above with live notes mixed in)
 
                 voices_to_remove = []
                 for i, voice in enumerate(active_voices):
@@ -1766,6 +2536,48 @@ class DAWView:
 
     def update(self):
         """Update method called every frame to handle splitter dragging and time display."""
+        # Process MIDI control events
+        if self.midi_handler and self.midi_handler.input_opened:
+            control_events = self.midi_handler.get_control_events()
+            for event in control_events:
+                self._process_control_event(event)
+
+        # Handle held transport buttons for continuous actions
+        import time
+        current_time = time.time()
+
+        # Timeout for auto-release if no messages received (handles controllers that don't send release)
+        BUTTON_TIMEOUT = 0.2  # 200ms without messages = button released
+
+        for key, state in list(self.held_transport_buttons.items()):
+            function_name, cc_num = key
+            time_since_last_message = current_time - state.get('last_message_time', state['pressed_time'])
+            time_since_last_action = current_time - state['last_action_time']
+
+            # Auto-release if no messages received for timeout period
+            if time_since_last_message > BUTTON_TIMEOUT:
+                del self.held_transport_buttons[key]
+                print(f"[MIDI CTRL] {function_name.upper()} released (timeout)")
+                continue
+
+            # Only apply continuous action during playback
+            if not self.is_playing:
+                continue
+
+            # Define timing thresholds
+            HOLD_THRESHOLD = 0.25  # 250ms - button must be held this long before continuous actions start
+            CONTINUOUS_INTERVAL = 0.05  # 50ms between jumps once continuous mode starts
+
+            # Calculate time since initial button press
+            time_since_press = current_time - state['pressed_time']
+
+            # Only start continuous actions if button held longer than threshold
+            if time_since_press >= HOLD_THRESHOLD:
+                if time_since_last_action >= CONTINUOUS_INTERVAL:
+                    # Trigger continuous action (not first press)
+                    self._trigger_transport_function(function_name, first_press=False)
+                    state['last_action_time'] = current_time
+
         # Update piano roll (for auto-resize)
         if self.piano_roll:
             self.piano_roll.update()
