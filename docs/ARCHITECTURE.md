@@ -56,10 +56,51 @@
   - **Supports per-measure tempo changes via MeasureMetadata**
   - **Tracks both tick position and elapsed wall-clock time**
   - Converts tempo (BPM) and TPQN to sample-accurate timing
+- `audio/voice_manager.py` - Voice management for live MIDI input
+  - **LiveVoice**: Pre-renders individual notes in 2-second chunks
+  - **VoiceManager**: Manages collection of active voices, handles polyphony
+  - Streams audio from buffers (eliminates phase discontinuity/retriggering)
+  - Automatic buffer extension for held notes (1-second chunks)
+  - Exponential release envelopes on note_off
+  - Waveform symbol translation ("~" → "SINE", "|/" → "SAW", etc.)
+  - Mixer integration (mute/solo/volume/pan)
 - `audio/engine.py` - Audio processing engine (legacy, currently unused)
 - `audio/dsp.py` - NumPy/Numba DSP utilities
 
-**Note**: Current audio playback is handled by `DAWView._playback_worker()` with real-time note triggering.
+**Note**: Current audio playback is handled by `DAWView._playback_worker()` with real-time note triggering and voice manager integration.
+
+### MIDI Layer
+
+- `midi/handler.py` - MIDI I/O with rtmidi
+  - Real-time MIDI input via callback thread
+  - Note event queue (1000 event capacity, thread-safe)
+  - Message parsing (note on/off, CC, aftertouch, pitch bend)
+  - MIDI output (SPP sync, Start/Stop/Continue, Clock)
+  - Channel-based routing to tracks
+- `core/midi_converter.py` - MIDI file conversion utilities (planned)
+
+**MIDI Input Flow:**
+```
+MIDI Controller → rtmidi callback (separate thread)
+       ↓
+Note event queue (thread-safe)
+       ↓
+Audio callback retrieves events
+       ↓
+DAWView._process_midi_event() routes to tracks
+       ↓
+VoiceManager creates/releases voices
+       ↓
+Audio output (mixed with Piano Roll notes)
+```
+
+**Features:**
+- Channel-based routing (each track listens to specific MIDI channel)
+- Note range filtering (separate keyboard from pads on same channel)
+- Velocity sensitivity (soft/loud hits sound different)
+- Polyphony (multiple simultaneous notes per track)
+- Aftertouch detection (logged, parameter modulation TODO)
+- MIDI SPP sync for external devices (song position pointer on loop jumps)
 
 ### Plugin Layer
 

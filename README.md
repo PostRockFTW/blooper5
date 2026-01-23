@@ -23,23 +23,36 @@ Blooper5 is in active development. Core functionality is implemented:
   - Sources: DualOscillator, Wavetable, FM Drum, Noise Drum, Square Cymbal, Periodic Noise
   - Effects: Reverb, Plate Reverb, Space Reverb, Delay, EQ
 - **Audio Engine**: NoteScheduler with tick-based playback (Blooper4-style master clock)
+- **Voice Manager**: Pre-rendering system for smooth MIDI input (eliminates retriggering artifacts)
+- **Loop Playback**: Adjustable loop region markers with live note editing support
 - **Project Persistence**: Save/load projects in .bloom5 format (MessagePack serialization)
 - **Unsaved Changes Protection**: Automatic warnings when loading/creating projects with unsaved changes
 - **Command Pattern**: Undo/redo support for all state changes
+- **MIDI Features**:
+  - Real-time MIDI input with channel-based routing
+  - Note range filtering (separate keyboard from pads on same channel)
+  - Live note triggering with velocity sensitivity
+  - Polyphonic input support (multiple simultaneous notes)
+  - Aftertouch detection (channel aftertouch)
+  - MIDI SPP (Song Position Pointer) sync for external devices
+  - Mixer integration (mute/solo/volume/pan work with live input)
 
 ### Planned
-- Audio playback with real-time synthesis
-- MIDI input/output
-- Automation lanes
+- MIDI automation lanes (CC, pitch bend, channel pressure)
+- MIDI recording to Piano Roll
+- MIDI learn for parameter mapping
+- MIDI device selection in UI
 - VST plugin hosting
 - Audio file import/export (WAV, MP3)
 - DrumRoll editor (drum sequencer)
+- MIDI file import/export
 
 ## Installation
 
 ### Requirements
 - Python 3.10 or higher
 - Windows, macOS, or Linux
+- MIDI controller (optional, for live input - tested with Akai MPK25)
 
 ### Setup
 
@@ -128,15 +141,16 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for architectural overview and 
 
 ## Known Issues
 
-1. **Audio buffering**: Audio playback needs pre-buffering to prevent glitches during real-time processing (see Claude_Questions.md Issue 1)
-2. **Grid zoom**: Piano Roll grid zoom levels need implementation following Blooper4's beat subdivision pattern (see Claude_Questions.md Issue 2)
-3. **Piano Roll first load**: Fixed in latest version - initial_load parameter prevents stale note data
+1. **Grid zoom**: Piano Roll grid zoom levels need implementation following Blooper4's beat subdivision pattern (see Claude_Questions.md)
+2. **MIDI input device selection**: Currently hardcoded to "Akai MPK25 0" - UI selection not yet implemented
+3. **Automation lanes**: MIDI data model complete, but UI for CC/pitch bend/aftertouch editing not yet implemented
 
 ## Technology Stack
 
 - **UI Framework**: DearPyGui (immediate-mode GUI)
 - **Audio Processing**: NumPy, SciPy, Numba (JIT compilation)
 - **Audio I/O**: sounddevice
+- **MIDI I/O**: python-rtmidi, mido
 - **Serialization**: MessagePack (compact binary format)
 - **Testing**: pytest
 

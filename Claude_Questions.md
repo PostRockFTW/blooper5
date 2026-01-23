@@ -2,6 +2,149 @@
 
 ## Completed
 
+### 2026-01-22: Voice Manager System - Fixed MIDI Keyboard Retriggering
+✅ **IMPLEMENTED**: Pre-rendering voice manager eliminates keyboard note retriggering artifacts
+
+**Problem:**
+- MIDI keyboard notes were retriggering hundreds of times per second
+- Every audio frame re-created the synth, causing phase discontinuities and audio glitches
+- Notes had audible clicks and pops during sustained playback
+- Real-time performance was degraded by constant synth recreation
+
+**Solution - Voice Manager with Pre-rendering:**
+- New `audio/voice_manager.py` module with `LiveVoice` and `VoiceManager` classes
+- Pre-renders notes in 2-second chunks when note_on is received
+- Streams audio from pre-rendered buffers (no phase resets)
+- Automatically extends buffers if notes held longer than 2 seconds
+- Applies smooth exponential release envelope on note_off
+- Full polyphony support with per-note state tracking
+
+**Technical Implementation:**
+- **Symbol Translation**: Maps symbolic waveform notation to proper names
+  - "~" → "SINE", "[]" → "SQUARE", "|/" → "SAW", "/\\" → "TRIANGLE"
+  - `translate_waveform_params()` handles conversion transparently
+- **Buffer Management**:
+  - Initial 2-second pre-render on note_on
+  - 1-second chunk extensions for held notes
+  - Memory-efficient truncation after release
+- **Release Envelope**:
+  - 300ms exponential decay by default (configurable)
+  - Applies to remaining buffer only (doesn't extend duration)
+  - Quick 50ms release on rapid retriggering
+- **Integration**:
+  - `DAWView._process_midi_event()` uses voice manager for note_on/note_off
+  - `DAWView._handle_audio_clock()` calls `voice_manager.render_frame()`
+  - Transport events (stop, loop, SPP jump) call `voice_manager.clear_all()`
+  - Mixer controls (mute/solo/volume/pan) integrated in render pipeline
+
+**Files Modified:**
+- `audio/voice_manager.py` - NEW - Core voice management system
+- `ui/views/DAWView.py` - Integrated voice manager for live MIDI rendering
+- `core/models.py` - Added waveform symbol support validation
+- `midi/handler.py` - Enhanced MIDI event handling
+- `audio/dsp.py` - DSP utility updates
+- `audio/scheduler.py` - Scheduler integration
+- `main.py` - Application initialization updates
+- `plugins/registry.py` - Plugin registry enhancements
+- `requirements.txt` - Updated dependencies (python-rtmidi, mido)
+- `ui/views/LandingPage.py` - UI improvements
+- `ui/widgets/PianoRoll.py` - Piano roll enhancements
+- `.claude/settings.local.json` - Local configuration updates
+
+**Impact:**
+- ✅ Notes sustain smoothly without clicks or pops
+- ✅ Full polyphony with independent voice state
+- ✅ Velocity-sensitive playback
+- ✅ Clean release envelopes (no abrupt cutoffs)
+- ✅ Efficient CPU usage (pre-rendering vs. real-time synthesis)
+- ✅ Mixer controls work seamlessly with live input
+- ✅ Proper cleanup on transport events
+
+**Performance:**
+- 2-second initial buffer ≈ 88,200 samples @ 44.1kHz (178KB per voice)
+- Automatic extension in 1-second chunks (44KB) for held notes
+- No CPU spikes during note sustain (only during initial note_on)
+- Memory released immediately after note completion
+
+### 2026-01-21: Real-Time MIDI Input with Channel-Based Routing
+✅ **IMPLEMENTED**: Live MIDI input from MPK25 controller
+- **MIDI Handler Enhancements**: Added note event queue (1000 event capacity) for incoming MIDI messages
+  - Enhanced `_midi_input_callback()` to parse note on/off, CC, and aftertouch events
+  - Added `get_note_events()` method to retrieve queued events (thread-safe)
+  - Added `input_opened` and `output_opened` properties for status checking
+- **Track Model Updates**: Added MIDI input routing fields
+  - `receive_midi_input: bool` - Enable MIDI input on specific tracks
+  - `midi_note_min: int` - Minimum note number to accept (0-127)
+  - `midi_note_max: int` - Maximum note number to accept (0-127)
+  - Full serialization support in .bloom5 files
+- **Live Note Triggering**: Real-time audio synthesis from MIDI input
+  - `active_live_notes` dictionary tracks currently playing notes
+  - `_process_midi_event()` method handles channel-based routing with note range filtering
+  - Audio callback processes MIDI events and renders live notes every frame
+  - Mixer integration: mute/solo/volume/pan work with live input in real-time
+- **MPK25 Configuration**: Generic preset analysis
+  - All pads on MIDI Channel 1, notes 36-83 (48 pads across 4 banks)
+  - Channel aftertouch supported and detected
+  - Note range filtering separates keyboard from pads on same MIDI channel
+- **Test Project**: `test_midi_input.bloom5` with 3 configured tracks
+  - Track 0: Keyboard High (Ch 1, notes 84-127) - Melodic synth (sine waves)
+  - Track 1: Pads (Ch 1, notes 36-83) - Percussive synth (saw + square)
+  - Track 2: Keyboard Low (Ch 1, notes 0-35) - Bass synth (dual saw)
+
+Files modified:
+- `midi/handler.py` - Note event queue, MIDI parsing, event retrieval
+- `core/models.py` - Track MIDI input fields (receive_midi_input, note range)
+- `ui/views/DAWView.py` - Live note triggering, MIDI event routing
+
+Files created:
+- `test_midi_input.bloom5` - Pre-configured test project
+- `create_midi_input_test.py` - Test project generator script
+- `MIDI_INPUT_TESTING.md` - Complete testing guide
+
+**Key Features**:
+- ✅ Channel-based routing (each track listens to specific MIDI channel)
+- ✅ Note range filtering (separate keyboard from pads on same channel)
+- ✅ Real-time synthesis (zero-latency note triggering)
+- ✅ Polyphony (multiple simultaneous notes)
+- ✅ Velocity sensitivity (soft/loud hits sound different)
+- ✅ Aftertouch detection (currently logged, parameter modulation TODO)
+- ✅ Mixer integration (mute/solo/volume/pan work with live input)
+
+**Bugs Fixed**:
+1. Audio buffer bug - Output was being zeroed after mixing live notes
+2. Waveform names - Test project used symbols instead of valid names ("SAW", "SINE", "SQUARE")
+3. MIDI port conflicts - Properly handles exclusive port access
+
+**Future Enhancements**:
+- Aftertouch → synth parameter modulation (filter cutoff, vibrato, etc.)
+- CC controllers → synth parameter mapping
+- MIDI input device selection in UI (currently hardcoded to "Akai MPK25 0")
+- MIDI learn for parameter assignment
+- Recording live MIDI input to Piano Roll
+
+### 2026-01-20: Loop Functionality Fixes
+✅ **FIXED**: Loop markers now work from initial position
+- **Root Cause**: Playback logic checked `song.loop_end_tick` directly, which is `None` for new projects
+- **Visual vs Playback Mismatch**: Loop markers displayed at song boundaries, but playback saw `None` and never looped
+- **Solution**: Handle `None` gracefully by defaulting to `song.length_ticks` in playback worker
+- **Implementation**: `ui/views/DAWView.py:1634` - Added `loop_end_tick` effective value calculation
+
+✅ **FIXED**: Note edits now reflected during loop playback
+- **Root Cause**: `current_song_id` not updated when loop settings changed, causing save validation to fail
+- **Impact**: After toggling loop or dragging markers, note edits were blocked with "Skipping save" message
+- **Solution**: Update `current_song_id` when creating new song objects in loop-related callbacks
+- **Implementation**:
+  - `ui/views/DAWView.py:1451` - Update song ID in `_on_loop_toggle()`
+  - `ui/views/DAWView.py:1380` - Update song ID in `_on_loop_markers_changed()`
+
+Files modified:
+- `ui/views/DAWView.py` - Loop playback logic, song ID tracking
+
+**Result**:
+- Looping works immediately on new projects without dragging markers
+- Live note editing during playback updates audio on next loop iteration
+- No more cross-project note pollution warnings during normal editing
+
 ### 2026-01-20: UI Toolbar Improvements & Bar Editing
 - **Note Toolbar Compaction**: Reduced height from 85px to 70px by adding WindowPadding override
 - **Bar Edit Toolbar**: New inline toolbar for bar/measure operations (Clear, Remove, Copy, Paste, Add Before/After)
@@ -108,186 +251,162 @@ The 9/8 time signature grid rendering needs visual refinement:
 
 ---
 
-## MIDI Feature Completeness Audit (2026-01-16)
+## MIDI Feature Completeness Audit (2026-01-20 UPDATE)
 
-**Goal**: Ensure every possible MIDI event can be saved in .bloom5 files and has Piano Roll UI representation
+**Status Summary:**
+- ✅ **Data Model**: COMPLETE - All MIDI fields/classes implemented and serialized
+- ⚠️ **UI Layer**: PARTIAL - Velocity controls only, no automation lanes
+- ❌ **MIDI I/O**: NOT IMPLEMENTED - Real-time input/output are stubs
+
+**Goal**: Ensure UI and I/O features catch up with the complete data model
 
 ### Channel Voice Messages (Per-Note/Per-Channel MIDI Data)
 
 #### ✅ Note On/Off (0x80/0x90)
-**Current Status**: PARTIAL
-- ✅ Note number (pitch 0-127) - Stored in Note model
-- ✅ Note on velocity (0-127) - Stored in Note model
-- ❌ Note off velocity (release velocity) - NOT STORED
-- ❌ MIDI channel (0-15) - No channel concept in Track model
-- **TODO Data Model**:
-  - Add `release_velocity: int = 127` to Note model
-  - Add `midi_channel: int = 0` to Track model
-- **TODO Piano Roll UI**:
-  - Velocity editor lane (vertical bars showing velocity per note)
-  - Release velocity editor (separate lane or combined)
-  - Color-code notes by velocity (darker = softer, brighter = louder)
-  - Velocity painting tool (draw velocity curves with mouse)
+**Data Model**: ✅ COMPLETE
+- ✅ Note number (pitch 0-127) - `Note.note` (core/models.py:310)
+- ✅ Note on velocity (0-127) - `Note.velocity` (core/models.py:313)
+- ✅ Note off velocity (release velocity) - `Note.release_velocity` (core/models.py:315)
+- ✅ MIDI channel (0-15) - `Track.midi_channel` (core/models.py:434)
+- ✅ Full serialization to .bloom5 files
+- ✅ Validation (0-127 range checks)
 
-#### ❌ Polyphonic Aftertouch (0xA0)
-**Current Status**: NOT IMPLEMENTED
-- **Description**: Per-note pressure after initial strike (0-127)
-- **Use Cases**: MPE controllers, expressive playing, per-note vibrato/timbre control
-- **TODO Data Model**:
-  - Add `AutomationLane` model for time-series data
-  - Store per-note aftertouch curves: `List[Tuple[tick, value]]`
-  - Or add `aftertouch_curve: Optional[Tuple[AutomationPoint, ...]]` to Note model
-- **TODO Piano Roll UI**:
-  - Aftertouch automation lane below notes (like DAW automation)
-  - Pencil tool to draw aftertouch curves
-  - Freehand drawing mode for smooth curves
-  - Display as gradient overlay on notes showing pressure changes
+**UI Implementation**: ⚠️ PARTIAL
+- ✅ Velocity toolbar slider (applies to new notes globally) (ui/widgets/NoteDrawToolbar.py:106-118)
+- ✅ Release velocity toolbar slider (ui/widgets/NoteDrawToolbar.py:119-127)
+- ✅ Visual velocity bars on notes (left=on velocity, right=off velocity) (ui/widgets/PianoRoll.py:790-820)
+- ❌ No per-note velocity editing lane
+- ❌ No velocity painting tool
+- ❌ No velocity color coding by brightness
 
-#### ❌ Control Change (0xB0) - 128 Controllers
-**Current Status**: COMPLETELY MISSING
-- **Critical Controllers to Support**:
+**MIDI I/O**: ⚠️ PARTIAL
+- ✅ Import/export note on velocity
+- ✅ Real-time MIDI input (live playback, velocity-sensitive) - **NEW 2026-01-21**
+- ❌ Release velocity not exported to MIDI files
+- ❌ MIDI input recording to Piano Roll not implemented
 
-  **Continuous Controllers (0-31, 64-95):**
-  - CC1 (Modulation Wheel) - Vibrato, tremolo, filter modulation
-  - CC2 (Breath Controller) - Wind instrument expression
-  - CC4 (Foot Controller) - Volume pedal, expression pedal
-  - CC7 (Volume) - Currently stored as Track.volume, not as CC automation
-  - CC10 (Pan) - Currently stored as Track.pan, not as CC automation
-  - CC11 (Expression) - Dynamic expression separate from velocity
-  - CC64 (Sustain Pedal) - Hold notes, most common pedal
-  - CC65 (Portamento On/Off) - Glide between notes
-  - CC66 (Sostenuto Pedal) - Selective sustain
-  - CC67 (Soft Pedal) - Reduce velocity
-  - CC71 (Filter Resonance) - Synth control
-  - CC74 (Filter Cutoff) - Brightness control
-  - CC91 (Reverb Send) - Effect send level
-  - CC93 (Chorus Send) - Effect send level
+#### ⚠️ Polyphonic Aftertouch (0xA0)
+**Data Model**: ✅ COMPLETE
+- ✅ `Note.aftertouch_curve` field (core/models.py:316)
+- ✅ Stores per-note aftertouch as `Tuple[AutomationPoint, ...]`
+- ✅ AutomationPoint supports linear/stepped/bezier interpolation (core/models.py:14-50)
+- ✅ Full serialization to .bloom5 files
 
-  **High-Resolution 14-bit Controllers (paired MSB/LSB):**
-  - CC0/32 (Bank Select MSB/LSB) - Select sound banks
-  - CC1/33 (Modulation MSB/LSB) - High-res modulation
-  - CC7/39 (Volume MSB/LSB) - High-res volume
-  - CC10/42 (Pan MSB/LSB) - High-res panning
+**UI Implementation**: ❌ NOT IMPLEMENTED
+- ❌ No aftertouch automation lane rendering
+- ❌ No pencil tool to draw aftertouch curves
+- ❌ No freehand drawing mode for smooth curves
+- ❌ No visual overlay on notes showing pressure changes
 
-  **Switch Controllers (0/127 on/off):**
-  - CC64-69 (Sustain, Portamento, Sostenuto, Soft, Legato, Hold2)
-  - CC80-83 (General Purpose buttons)
+**MIDI I/O**: ❌ NOT IMPLEMENTED
+- ❌ Polyphonic aftertouch not imported from MIDI
+- ❌ Polyphonic aftertouch not exported to MIDI
 
-  **Data Entry:**
-  - CC6/38 (Data Entry MSB/LSB) - For RPN/NRPN editing
-  - CC96-97 (Data Increment/Decrement)
-  - CC98-101 (NRPN/RPN LSB/MSB) - Registered/Non-registered parameters
+#### ⚠️ Control Change (0xB0) - 128 Controllers
+**Data Model**: ✅ COMPLETE
+- ✅ `AutomationPoint` class (core/models.py:14-50)
+  - tick: Absolute tick position
+  - value: Normalized 0.0-1.0
+  - curve_type: "linear", "stepped", or "bezier"
+- ✅ `CCAutomation` class (core/models.py:52-132)
+  - cc_number: 0-127
+  - points: Tuple of AutomationPoint objects
+  - display_name: Human-readable label
+  - get_value_at_tick() method for interpolation
+- ✅ `Track.cc_automation` field (core/models.py:438)
+  - Stores multiple CC lanes per track
+  - Full serialization to .bloom5 files
 
-  **Mode Messages (120-127):**
-  - CC120 (All Sound Off)
-  - CC121 (Reset All Controllers)
-  - CC123 (All Notes Off)
-  - CC124-127 (Omni/Mono/Poly mode)
+**Critical Controllers Supported** (data model ready, UI needed):
+- CC1 (Modulation Wheel) - Vibrato, tremolo, filter modulation
+- CC2 (Breath Controller) - Wind instrument expression
+- CC4 (Foot Controller) - Volume pedal, expression pedal
+- CC7 (Volume) - Track.volume exists but no CC automation curve
+- CC10 (Pan) - Track.pan exists but no CC automation curve
+- CC11 (Expression) - Dynamic expression separate from velocity
+- CC64 (Sustain Pedal) - Hold notes, most common pedal
+- CC65-69 (Portamento, Sostenuto, Soft, Legato, Hold2)
+- CC71 (Filter Resonance) - Synth control
+- CC74 (Filter Cutoff) - Brightness control
+- CC91 (Reverb Send) - Effect send level
+- CC93 (Chorus Send) - Effect send level
+- All 128 controllers supported via generic automation system
 
-- **TODO Data Model**:
-  ```python
-  @dataclass(frozen=True)
-  class CCAutomation:
-      """CC automation for a track."""
-      cc_number: int  # 0-127
-      points: Tuple[AutomationPoint, ...]  # Time-series data
+**UI Implementation**: ❌ NOT IMPLEMENTED
+- ❌ No automation lane rendering system
+- ❌ No CC selector dropdown
+- ❌ No drawing tools (pencil/line/freehand)
+- ❌ No visualization of CC curves
+- ❌ No filled area graphs
+- ❌ No multi-lane display
 
-  @dataclass(frozen=True)
-  class AutomationPoint:
-      """Single automation point."""
-      tick: int  # Absolute tick position
-      value: int  # 0-127 (or 0-16383 for 14-bit)
-      curve_type: str = "linear"  # "linear", "stepped", "bezier"
+**MIDI I/O**: ⚠️ PARTIAL
+- ✅ CC message detection from MIDI input (logged) - **NEW 2026-01-21**
+- ❌ CC automation not imported from MIDI files
+- ❌ CC automation not exported to MIDI files
+- ❌ CC messages not routed to synth parameters (TODO: MIDI learn system)
 
-  # Add to Track model:
-  cc_automation: Tuple[CCAutomation, ...] = ()
-  ```
+#### ⚠️ Program Change (0xC0)
+**Data Model**: ✅ COMPLETE
+- ✅ `Track.program_number` field (core/models.py:435)
+  - MIDI program/patch number (0-127)
+- ✅ `Track.bank_msb` field (core/models.py:436)
+  - Bank Select MSB (CC0)
+- ✅ `Track.bank_lsb` field (core/models.py:437)
+  - Bank Select LSB (CC32)
+- ✅ Full serialization to .bloom5 files
 
-- **TODO Piano Roll UI**:
-  - **Automation Lane System**:
-    - Show/hide automation lanes below note grid
-    - Lane selector dropdown (select which CC to edit)
-    - Multiple lanes visible simultaneously (stacked)
-  - **Drawing Tools**:
-    - Pencil tool for drawing CC curves
-    - Line tool for ramps (fade in/out)
-    - Freehand mouse drawing for smooth curves
-    - Step sequencer mode for rhythmic modulation
-  - **Visual Representation**:
-    - Filled area graph (0-127 range)
-    - Color-coded by CC type (mod=blue, expression=red, etc.)
-    - Grid lines at 25%, 50%, 75% values
-    - Snap to grid option for rhythmic CC changes
-  - **Editing**:
-    - Click-drag to adjust values
-    - Multi-select automation points
-    - Copy/paste automation curves
-    - Reset to default value (64 for center, 0 for off)
+**UI Implementation**: ❌ NOT IMPLEMENTED
+- ❌ No track header dropdown for selecting program/preset
+- ❌ No timeline markers showing program changes
+- ❌ No "Insert Program Change" button
+- ❌ No visual indicator when program changes occur
+- ❌ No support for mid-song program changes (only initial program stored)
 
-#### ❌ Program Change (0xC0)
-**Current Status**: NOT IMPLEMENTED
-- **Description**: Select instrument/preset (0-127)
-- **Use Cases**: Change sounds mid-song, multi-timbral arrangements
-- **TODO Data Model**:
-  - Add `program_number: int = 0` to Track model
-  - Add `ProgramChange` events at specific ticks for mid-song changes
-  - Store bank select (CC0/32) + program number together
-- **TODO Piano Roll UI**:
-  - Track header dropdown for selecting program/preset
-  - Timeline markers showing program changes
-  - "Insert Program Change" button at playhead position
-  - Visual indicator when program changes occur
+**MIDI I/O**: ❌ NOT IMPLEMENTED
+- ❌ Program change not exported to MIDI files
+- ❌ Bank select not exported to MIDI files
 
-#### ❌ Channel Pressure/Aftertouch (0xD0)
-**Current Status**: NOT IMPLEMENTED
-- **Description**: Global pressure for entire channel (not per-note)
-- **Difference from Poly Aftertouch**: Applies to all notes, not individual notes
-- **TODO Data Model**:
-  - Store as CC-like automation: `channel_pressure: Tuple[AutomationPoint, ...]`
-  - Track-level pressure curve (not per-note)
-- **TODO Piano Roll UI**:
-  - Dedicated automation lane labeled "Channel Pressure"
-  - Same drawing tools as CC automation
-  - Visual feedback showing pressure affecting all active notes
+#### ⚠️ Channel Pressure/Aftertouch (0xD0)
+**Data Model**: ✅ COMPLETE
+- ✅ `Track.channel_pressure` field (core/models.py:440)
+  - Stores as `Tuple[AutomationPoint, ...]`
+  - Track-level pressure curve (applies to all notes, not per-note)
+- ✅ Full serialization to .bloom5 files
 
-#### ❌ Pitch Bend (0xE0)
-**Current Status**: NOT IMPLEMENTED
-- **Description**: 14-bit pitch wheel data (-8192 to +8191, center=0)
-- **Use Cases**: Vibrato, glissando, pitch slides, guitar bends
-- **TODO Data Model**:
-  ```python
-  @dataclass(frozen=True)
-  class PitchBendAutomation:
-      points: Tuple[PitchBendPoint, ...]
-      range_semitones: int = 2  # Bend range (+/- semitones)
+**UI Implementation**: ❌ NOT IMPLEMENTED
+- ❌ No dedicated automation lane for channel pressure
+- ❌ No drawing tools for pressure curves
+- ❌ No visual feedback showing pressure affecting notes
 
-  @dataclass(frozen=True)
-  class PitchBendPoint:
-      tick: int
-      value: int  # -8192 to +8191 (14-bit)
-      curve_type: str = "linear"
+**MIDI I/O**: ⚠️ PARTIAL
+- ✅ Channel aftertouch detection from MIDI input (logged) - **NEW 2026-01-21**
+- ❌ Channel pressure not imported from MIDI files
+- ❌ Channel pressure not exported to MIDI files
+- ❌ Aftertouch not routed to synth parameters (TODO: modulate filter, vibrato, etc.)
 
-  # Add to Track model:
-  pitch_bend: Optional[PitchBendAutomation] = None
-  ```
+#### ⚠️ Pitch Bend (0xE0)
+**Data Model**: ✅ COMPLETE
+- ✅ `PitchBendAutomation` class (core/models.py:135-213)
+  - points: Tuple of AutomationPoint objects (value range: -1.0 to +1.0)
+  - range_semitones: Pitch bend range in semitones (default 2)
+  - get_value_at_tick() method returns 14-bit value (-8192 to +8191)
+- ✅ `Track.pitch_bend` field (core/models.py:439)
+  - Optional[PitchBendAutomation]
+- ✅ Full serialization to .bloom5 files
+- ✅ Linear and stepped interpolation support
 
-- **TODO Piano Roll UI**:
-  - **Automation Lane**:
-    - Centered at 0 (no bend)
-    - Range: -2 to +2 semitones by default (configurable)
-    - Scale marks at -1, 0, +1 semitones
-  - **Drawing Tools**:
-    - Smooth curve drawing (important for natural bends)
-    - Reset to center (0) button
-    - Bend range selector (±1, ±2, ±12 semitones)
-  - **Visual Feedback**:
-    - Show pitch bend curve overlaid on notes
-    - Display actual resulting pitch (e.g., "C4 → C#4")
-    - Vibrato presets (sine wave generator)
-  - **Editing**:
-    - Click-drag to create pitch bends
-    - Snap to semitone increments option
-    - Copy/paste bend curves between notes
+**UI Implementation**: ❌ NOT IMPLEMENTED
+- ❌ No automation lane for pitch bend
+- ❌ No drawing tools for bend curves
+- ❌ No bend range selector (±1, ±2, ±12 semitones)
+- ❌ No visual feedback showing pitch bend on notes
+- ❌ No vibrato preset generator
+- ❌ No reset to center (0) button
+
+**MIDI I/O**: ❌ NOT IMPLEMENTED
+- ❌ Pitch bend not imported from MIDI files
+- ❌ Pitch bend not exported to MIDI files
 
 ---
 
@@ -315,12 +434,19 @@ The 9/8 time signature grid rendering needs visual refinement:
 
 ### System Real-Time Messages (Transport Control)
 
-#### ❌ Timing Clock (0xF8)
-**Current Status**: NOT IMPLEMENTED
-- **Description**: 24 clocks per quarter note for sync
-- **Use Cases**: Sync with external gear, drum machines, arpeggiators
-- **TODO Data Model**: Add MIDI clock send/receive settings to Song
-- **TODO UI**: "Sync to MIDI Clock" checkbox in settings
+#### ⚠️ Timing Clock (0xF8)
+**Data Model**: ✅ COMPLETE
+- ✅ `Song.send_midi_clock` field (core/models.py:570)
+- ✅ `Song.receive_midi_clock` field (core/models.py:571)
+- ✅ Full serialization to .bloom5 files
+
+**UI Implementation**: ❌ NOT IMPLEMENTED
+- ❌ No "Sync to MIDI Clock" checkbox in settings
+- ❌ No MIDI clock indicator
+
+**MIDI I/O**: ❌ NOT IMPLEMENTED
+- ❌ No MIDI clock transmission (24 clocks per quarter note)
+- ❌ No MIDI clock reception for sync
 
 #### ❌ Start/Stop/Continue (0xFA, 0xFC, 0xFB)
 **Current Status**: PARTIAL - Internal playback only, no MIDI messages
@@ -342,27 +468,41 @@ The 9/8 time signature grid rendering needs visual refinement:
 - Will be stored in `MeasureMetadata.time_signature`
 - Maps to MIDI TimeSignature meta event
 
-#### ❌ Key Signature (0xFF 0x59)
-**Current Status**: NOT IMPLEMENTED
-- **Description**: Key and scale (e.g., C major, A minor)
-- **Use Cases**: Display correct accidentals, scale-aware note snapping
-- **TODO Data Model**: Add `key_signature: Tuple[int, int]` to Song/MeasureMetadata
-  - First int: -7 to +7 (flats to sharps)
-  - Second int: 0=major, 1=minor
-- **TODO Piano Roll UI**:
-  - Highlight scale notes in piano roll (in-key notes brighter)
-  - "Snap to Scale" option when drawing notes
-  - Key signature indicator in toolbar
+#### ⚠️ Key Signature (0xFF 0x59)
+**Data Model**: ✅ COMPLETE
+- ✅ `Song.key_signature` field (core/models.py:568)
+  - Tuple[int, int]: (sharps/flats [-7 to +7], major/minor [0=major, 1=minor])
+- ✅ Full serialization to .bloom5 files
+
+**UI Implementation**: ❌ NOT IMPLEMENTED
+- ❌ No key signature indicator in piano roll
+- ❌ No scale note highlighting (in-key notes brighter)
+- ❌ No "Snap to Scale" option when drawing notes
+
+**MIDI I/O**: ❌ NOT IMPLEMENTED
+- ❌ Key signature not exported to MIDI files
 
 #### ❌ Lyrics (0xFF 0x05)
 **Current Status**: NOT IMPLEMENTED
 - **TODO**: Add lyrics track/lane for vocal notation
 
-#### ❌ Marker (0xFF 0x06)
-**Current Status**: NOT IMPLEMENTED
-- **Description**: Named markers at specific times (intro, verse, chorus, etc.)
-- **TODO Data Model**: Add `Marker` model with tick position and name
-- **TODO UI**: Timeline markers with editable names
+#### ⚠️ Marker (0xFF 0x06)
+**Data Model**: ✅ COMPLETE
+- ✅ `Marker` class (core/models.py:216-250)
+  - tick: Absolute tick position
+  - name: Marker name/label
+  - color: RGB color tuple
+- ✅ `Song.markers` field (core/models.py:569)
+  - Stores tuple of Marker objects
+- ✅ Full serialization to .bloom5 files
+
+**UI Implementation**: ❌ NOT IMPLEMENTED
+- ❌ No timeline markers display
+- ❌ No marker creation/editing UI
+- ❌ No marker labels in timeline
+
+**MIDI I/O**: ❌ NOT IMPLEMENTED
+- ❌ Markers not exported to MIDI files
 
 #### ❌ Cue Point (0xFF 0x07)
 **Current Status**: NOT IMPLEMENTED
@@ -397,24 +537,47 @@ The 9/8 time signature grid rendering needs visual refinement:
 
 ### Real-Time MIDI Input/Output
 
-#### ❌ MIDI Input (Recording)
-**Current Status**: NOT IMPLEMENTED (MIDIHandler is stub only)
-- **TODO**:
-  - Implement MIDIHandler using `rtmidi` library
-  - Real-time note recording to Piano Roll
-  - CC learning/recording
-  - Input quantization
+#### ⚠️ MIDI Input (Live Performance & Recording)
+**Current Status**: PARTIAL - Live playback implemented, recording TODO
+- **✅ IMPLEMENTED (2026-01-21)**:
+  - MIDIHandler using `rtmidi` library (midi/handler.py)
+  - Real-time note input with channel-based routing
+  - Thread-safe note event queue (1000 event capacity)
+  - Note on/off parsing and routing
+  - Aftertouch detection (channel aftertouch)
+  - CC message detection
+  - Live audio synthesis from MIDI input
+  - Note range filtering (separate keyboard from pads)
+  - Polyphonic input (multiple simultaneous notes)
+  - Mixer integration (mute/solo/volume/pan)
+- **❌ TODO**:
+  - Record MIDI input to Piano Roll
+  - Input quantization during recording
+  - CC learning/recording to automation lanes
   - Metronome/click track during recording
   - Count-in before recording
   - Overdub vs replace recording modes
+  - MIDI input device selection in UI (currently hardcoded to "Akai MPK25 0")
 
-#### ❌ MIDI Output (Playback to External Devices)
-**Current Status**: NOT IMPLEMENTED
-- **TODO**:
+**Implementation Details**:
+- MIDI callback runs in separate thread (rtmidi thread)
+- Events queued via `note_event_queue` (non-blocking)
+- Audio callback retrieves events via `get_note_events()`
+- Routing via `_process_midi_event()` based on track configuration
+- Active notes tracked in `active_live_notes` dictionary
+- Audio generated per-frame using track's synth parameters
+
+#### ⚠️ MIDI Output (Playback to External Devices)
+**Current Status**: PARTIAL - SPP sync implemented, note output TODO
+- **✅ IMPLEMENTED (2026-01-20)**:
+  - MIDI SPP (Song Position Pointer) sending on loop jumps
+  - MIDI Start/Stop/Continue messages
+  - Thread-safe output handling
+- **❌ TODO**:
   - Send note on/off to external synths
   - Send CC automation to hardware
   - Send pitch bend, aftertouch
-  - MIDI clock sync output
+  - MIDI clock sync output (24 clocks per quarter note)
   - Latency compensation
 
 #### ❌ MIDI Learn
@@ -461,13 +624,16 @@ The 9/8 time signature grid rendering needs visual refinement:
 - **Selection Tool**: Select/move/copy multiple points
 
 #### Curve Types
-- **Linear**: Straight line between points
-- **Stepped**: No interpolation, jumps instantly
-- **Bezier**: Smooth curves with control handles
-- **Exponential**: Natural fade curves
+**Already Supported in Data Model** (core/models.py:14-50):
+- **Linear**: ✅ Straight line between points
+- **Stepped**: ✅ No interpolation, jumps instantly
+- **Bezier**: ✅ Smooth curves with control handles (not yet implemented in UI)
+
+**TODO - Add to Data Model**:
+- **Exponential**: Natural fade curves (for future implementation)
 
 #### Velocity Editor Enhancements
-**Current**: Velocity stored, but no visual editor
+**Current**: Velocity stored and visualized on notes, but no dedicated editor lane
 - **TODO**:
   - Velocity lane showing vertical bars per note
   - Color gradient on notes (velocity = brightness)
@@ -478,32 +644,45 @@ The 9/8 time signature grid rendering needs visual refinement:
 
 ---
 
-### Data Model Changes Summary
+### Data Model Implementation Status
 
-**New Models Needed**:
+**✅ COMPLETE - All models implemented in core/models.py:**
+
 ```python
+# Already implemented (core/models.py:14-50)
 @dataclass(frozen=True)
 class AutomationPoint:
     tick: int
-    value: int  # or float for normalized 0.0-1.0
-    curve_type: str = "linear"
+    value: float  # Normalized 0.0-1.0 for CC, -1.0 to 1.0 for pitch bend
+    curve_type: str = "linear"  # "linear", "stepped", "bezier"
 
+# Already implemented (core/models.py:52-132)
 @dataclass(frozen=True)
 class CCAutomation:
     cc_number: int  # 0-127
     points: Tuple[AutomationPoint, ...]
+    display_name: str = ""
 
+    def get_value_at_tick(self, tick: int) -> float:
+        """Get interpolated automation value at a specific tick."""
+
+# Already implemented (core/models.py:135-213)
 @dataclass(frozen=True)
 class PitchBendAutomation:
-    points: Tuple[AutomationPoint, ...]  # value: -8192 to +8191
+    points: Tuple[AutomationPoint, ...]  # value: -1.0 to +1.0
     range_semitones: int = 2
 
+    def get_value_at_tick(self, tick: int) -> int:
+        """Get interpolated pitch bend value (-8192 to +8191)."""
+
+# Already implemented (core/models.py:216-250)
 @dataclass(frozen=True)
 class Marker:
     tick: int
     name: str
     color: Tuple[int, int, int] = (255, 255, 0)
 
+# NOT YET IMPLEMENTED (planned for MIDI learn feature)
 @dataclass(frozen=True)
 class MIDILearnMapping:
     cc_number: int
@@ -513,64 +692,105 @@ class MIDILearnMapping:
     max_value: float = 1.0
 ```
 
-**Updates to Existing Models**:
+**✅ Note Model (core/models.py:295-359) - ALL MIDI FIELDS IMPLEMENTED:**
 ```python
 @dataclass(frozen=True)
 class Note:
-    # Existing fields...
-    note: int
-    start: float
-    duration: float
-    velocity: int = 100
+    note: int  # MIDI note number 0-127
+    start: float  # Start time in beats
+    duration: float  # Duration in beats
+    velocity: int = 100  # Note-on velocity 1-127
+    selected: bool = False  # UI selection state
+    release_velocity: int = 64  # ✅ Note-off velocity 0-127
+    aftertouch_curve: Optional[Tuple[AutomationPoint, ...]] = None  # ✅ Polyphonic aftertouch
+```
 
-    # NEW FIELDS:
-    release_velocity: int = 127
-    aftertouch_curve: Optional[Tuple[AutomationPoint, ...]] = None
-
+**✅ Track Model (core/models.py:361-540) - ALL MIDI FIELDS IMPLEMENTED:**
+```python
 @dataclass(frozen=True)
 class Track:
-    # Existing fields...
-    name: str
-    notes: Tuple[Note, ...]
-    volume: float
-    pan: float
+    # ... existing fields (name, mode, source, effects, etc.)
 
-    # NEW FIELDS:
-    midi_channel: int = 0  # 0-15
-    program_number: int = 0  # 0-127
-    bank_msb: int = 0  # CC0
-    bank_lsb: int = 0  # CC32
-    cc_automation: Tuple[CCAutomation, ...] = ()
-    pitch_bend: Optional[PitchBendAutomation] = None
-    channel_pressure: Tuple[AutomationPoint, ...] = ()
+    # ✅ MIDI compliance fields (all implemented):
+    midi_channel: int = 0  # 0-15 (displayed as 1-16 in UI)
+    program_number: int = 0  # 0-127 (MIDI program/patch number)
+    bank_msb: int = 0  # CC0 (bank select MSB)
+    bank_lsb: int = 0  # CC32 (bank select LSB)
+    cc_automation: Tuple[CCAutomation, ...] = ()  # CC automation lanes
+    pitch_bend: Optional[PitchBendAutomation] = None  # Pitch bend automation
+    channel_pressure: Tuple[AutomationPoint, ...] = ()  # Channel aftertouch
+```
 
+**✅ Song Model (core/models.py:544-645) - ALL MIDI FIELDS IMPLEMENTED:**
+```python
 @dataclass(frozen=True)
 class Song:
-    # Existing fields...
-    name: str
-    bpm: float
-    tracks: Tuple[Track, ...]
+    # ... existing fields (name, bpm, time_signature, tracks, etc.)
 
-    # NEW FIELDS:
-    measure_metadata: Optional[Tuple[MeasureMetadata, ...]] = None  # Already planned
-    key_signature: Tuple[int, int] = (0, 0)  # C major default
-    markers: Tuple[Marker, ...] = ()
-    midi_learn_mappings: Tuple[MIDILearnMapping, ...] = ()
-    send_midi_clock: bool = False
-    receive_midi_clock: bool = False
+    # ✅ MIDI compliance fields (all implemented):
+    measure_metadata: Optional[Tuple[MeasureMetadata, ...]] = None  # ✅ Already implemented
+    key_signature: Tuple[int, int] = (0, 0)  # ✅ (sharps/flats, major/minor)
+    markers: Tuple[Marker, ...] = ()  # ✅ Timeline markers
+    send_midi_clock: bool = False  # ✅ Send MIDI clock to external devices
+    receive_midi_clock: bool = False  # ✅ Sync to external MIDI clock
 ```
+
+**Summary:**
+- ✅ All automation classes implemented with full interpolation support
+- ✅ All Note MIDI fields implemented (release velocity, aftertouch)
+- ✅ All Track MIDI fields implemented (channel, program, CC, pitch bend, pressure)
+- ✅ All Song MIDI fields implemented (key signature, markers, MIDI clock)
+- ✅ Full .bloom5 serialization working for all fields
+- ❌ MIDILearnMapping not yet implemented (planned for future)
+- ❌ UI for automation lanes not implemented
+- ❌ MIDI I/O not implemented (real-time input/output are stubs)
 
 ---
 
-### Implementation Priority
+### UI Implementation Roadmap
 
-**Phase 1 (Current Plan)**: Per-measure time signature and tempo
-**Phase 2 (HIGH)**: Velocity editor + CC automation infrastructure
-**Phase 3 (HIGH)**: Pitch bend automation
-**Phase 4 (MEDIUM)**: Real-time MIDI input/output
-**Phase 5 (MEDIUM)**: MIDI learn and controller mapping
-**Phase 6 (LOW)**: MPE support
-**Phase 7 (LOW)**: Advanced features (lyrics, markers, SysEx)
+**Phase 1: Velocity Editor (NEXT)**
+**Priority**: HIGH - Data exists but no per-note editing
+- Add velocity lane below piano roll
+- Implement velocity painting tool
+- Add color coding by velocity
+- Add crescendo/diminuendo tool
+
+**Phase 2: Automation Lane Infrastructure (HIGH)**
+**Priority**: HIGH - Needed for CC, pitch bend, aftertouch
+- Implement lane rendering system
+- Add lane selector dropdown
+- Implement drawing tools (pencil, line, freehand, eraser)
+- Support multiple visible lanes
+
+**Phase 3: CC Automation UI (HIGH)**
+**Priority**: HIGH - Data model complete, UI missing
+- Add CC lane display
+- Implement CC curve editing
+- Add preset CC templates (modulation, expression, etc.)
+
+**Phase 4: Pitch Bend UI (MEDIUM)**
+**Priority**: MEDIUM - Data model complete, UI missing
+- Add pitch bend lane
+- Implement bend curve drawing
+- Add bend range selector
+- Add vibrato generator
+
+**Phase 5: MIDI I/O (MEDIUM)**
+**Priority**: MEDIUM - Critical for real-time performance
+- Implement real-time MIDI input (rtmidi)
+- Add MIDI recording
+- Add MIDI output to external devices
+- Export all automation to MIDI files
+
+**Phase 6: Advanced Features (LOW)**
+**Priority**: LOW - Nice to have
+- Aftertouch editing UI
+- Channel pressure UI
+- Key signature display
+- Marker timeline
+- MIDI learn system
+- MPE support
 
 ---
 
