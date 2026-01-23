@@ -463,3 +463,88 @@ def clip_audio(buffer: np.ndarray, threshold: float = 1.0) -> np.ndarray:
         Clipped audio
     """
     return np.clip(buffer, -threshold, threshold)
+
+
+# === CYMBAL PHYSICAL MODELING UTILITIES ===
+
+# Inharmonic modal frequency ratios for metallic cymbals
+# Based on physical measurements of cymbal vibration modes
+# These ratios create the characteristic "metallic" sound
+CYMBAL_MODE_RATIOS = [1.00, 1.59, 2.14, 2.30, 2.65, 2.92, 3.50, 3.89, 4.15, 4.56, 5.12, 5.87, 6.34, 7.01, 7.89, 8.45]
+
+
+def safety_limiter(signal: np.ndarray, threshold: float = 0.95) -> np.ndarray:
+    """
+    Soft saturation limiter for feedback loop protection.
+
+    Uses tanh for smooth limiting to prevent feedback explosion.
+    CRITICAL for stability in feedback loops.
+
+    Args:
+        signal: Audio signal to limit
+        threshold: Limiting threshold (typically 0.95)
+
+    Returns:
+        Limited signal
+
+    Example:
+        >>> feedback_signal = safety_limiter(feedback_signal, threshold=0.95)
+    """
+    return np.tanh(signal / threshold) * threshold
+
+
+def phase_distortion(signal: np.ndarray, amount: float) -> np.ndarray:
+    """
+    Fast phase distortion approximation for brightness bloom.
+
+    Creates harmonic enhancement by modulating phase based on signal envelope.
+    Cheaper alternative to Hilbert-transform based phase modulation.
+
+    Args:
+        signal: Input audio signal
+        amount: Distortion amount (0-20, typical: 4-12)
+
+    Returns:
+        Phase-distorted signal with enhanced brightness
+
+    Example:
+        >>> bright_signal = phase_distortion(signal, amount=8.0)
+    """
+    if amount <= 0.0:
+        return signal
+
+    # Extract envelope (absolute value for simplicity)
+    envelope = np.abs(signal)
+
+    # Create phase modulation index based on envelope
+    mod_index = envelope * amount
+
+    # Accumulate phase shift
+    phase_shift = np.cumsum(mod_index) * 0.1
+
+    # Apply phase modulation via cosine
+    distorted = signal * np.cos(phase_shift)
+
+    return distorted
+
+
+def calculate_cymbal_modal_ratios(base_freq: float, num_modes: int) -> np.ndarray:
+    """
+    Calculate inharmonic modal frequencies for cymbal resonators.
+
+    Uses predefined inharmonic ratios based on physical cymbal measurements.
+
+    Args:
+        base_freq: Fundamental frequency in Hz
+        num_modes: Number of modes to generate (max 16)
+
+    Returns:
+        Array of modal frequencies in Hz
+
+    Example:
+        >>> freqs = calculate_cymbal_modal_ratios(200.0, 12)
+        >>> # Returns [200.0, 318.0, 428.0, 460.0, 530.0, ...]
+    """
+    num_modes = min(num_modes, len(CYMBAL_MODE_RATIOS))
+    ratios = CYMBAL_MODE_RATIOS[:num_modes]
+    return base_freq * np.array(ratios, dtype=np.float32)

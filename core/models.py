@@ -359,6 +359,91 @@ class Note:
 
 
 @dataclass(frozen=True)
+class MIDIControlMapping:
+    """
+    Maps a MIDI message to a DAW control function.
+
+    Supports multiple MIDI message types:
+    - CC (Control Change): most common for buttons/knobs
+    - Note: some controllers send note on/off for buttons
+    - MMC (MIDI Machine Control): industry standard transport
+    - Program Change: less common for transport
+
+    Attributes:
+        function: Function to trigger ("play", "stop", "record", "forward", "backward")
+        message_type: Type of MIDI message ("cc", "note", "mmc", "program_change")
+        channel: MIDI channel (0-15, None = omni/any channel)
+        cc_number: Controller number for CC messages (0-127)
+        note_number: Note number for Note messages (0-127)
+        mmc_command: MMC command code (1=Stop, 2=Play, 6=Record, etc.)
+        program_number: Program number for Program Change messages (0-127)
+        trigger_threshold: Value threshold for triggering (default 64)
+        is_toggle: Toggle vs Momentary behavior (default True)
+    """
+    function: str
+    message_type: str  # "cc", "note", "mmc", "program_change"
+    channel: Optional[int] = None
+    cc_number: Optional[int] = None
+    note_number: Optional[int] = None
+    mmc_command: Optional[int] = None
+    program_number: Optional[int] = None
+    trigger_threshold: int = 64
+    is_toggle: bool = True
+
+    def matches_message(self, parsed_message: dict) -> bool:
+        """Check if a parsed MIDI message matches this mapping."""
+        if parsed_message.get('type') != self.message_type:
+            return False
+
+        # Check channel (if specified)
+        if self.channel is not None:
+            if parsed_message.get('channel') != self.channel:
+                return False
+
+        # Check message-specific fields
+        if self.message_type == 'cc':
+            return parsed_message.get('controller') == self.cc_number
+        elif self.message_type == 'note':
+            # Match both note_on and note_off
+            return parsed_message.get('note') == self.note_number
+        elif self.message_type == 'mmc':
+            return parsed_message.get('mmc_command') == self.mmc_command
+        elif self.message_type == 'program_change':
+            return parsed_message.get('program') == self.program_number
+
+        return False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary."""
+        return {
+            'function': self.function,
+            'message_type': self.message_type,
+            'channel': self.channel,
+            'cc_number': self.cc_number,
+            'note_number': self.note_number,
+            'mmc_command': self.mmc_command,
+            'program_number': self.program_number,
+            'trigger_threshold': self.trigger_threshold,
+            'is_toggle': self.is_toggle
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'MIDIControlMapping':
+        """Deserialize from dictionary."""
+        return cls(
+            function=data['function'],
+            message_type=data['message_type'],
+            channel=data.get('channel'),
+            cc_number=data.get('cc_number'),
+            note_number=data.get('note_number'),
+            mmc_command=data.get('mmc_command'),
+            program_number=data.get('program_number'),
+            trigger_threshold=data.get('trigger_threshold', 64),
+            is_toggle=data.get('is_toggle', True)
+        )
+
+
+@dataclass(frozen=True)
 class Track:
     """
     Single track containing notes and settings (Blooper 4.1 schema).
@@ -439,6 +524,11 @@ class Track:
     pitch_bend: Optional[PitchBendAutomation] = None
     channel_pressure: Tuple[AutomationPoint, ...] = field(default_factory=tuple)
 
+    # MIDI input routing fields
+    receive_midi_input: bool = False  # Enable MIDI input on this track
+    midi_note_min: int = 0  # Minimum note number to accept (0-127)
+    midi_note_max: int = 127  # Maximum note number to accept (0-127)
+
     def __post_init__(self):
         """Validate track data and initialize sampler map if empty."""
         # Initialize sampler_map if not provided
@@ -486,6 +576,9 @@ class Track:
             "bank_lsb": self.bank_lsb,
             "cc_automation": [cc.to_dict() for cc in self.cc_automation],
             "channel_pressure": [p.to_dict() for p in self.channel_pressure],
+            "receive_midi_input": self.receive_midi_input,
+            "midi_note_min": self.midi_note_min,
+            "midi_note_max": self.midi_note_max,
         }
         if self.pitch_bend:
             result["pitch_bend"] = self.pitch_bend.to_dict()
@@ -537,6 +630,9 @@ class Track:
             cc_automation=cc_automation,
             pitch_bend=pitch_bend,
             channel_pressure=channel_pressure,
+            receive_midi_input=data.get("receive_midi_input", False),
+            midi_note_min=data.get("midi_note_min", 0),
+            midi_note_max=data.get("midi_note_max", 127),
         )
 
 
@@ -570,6 +666,14 @@ class Song:
     send_midi_clock: bool = False
     receive_midi_clock: bool = False
 
+    # Loop marker fields
+    loop_start_tick: int = 0
+    loop_end_tick: Optional[int] = None  # None = use full track length
+    loop_enabled: bool = False
+
+    # MIDI controller mappings
+    midi_control_mappings: Tuple['MIDIControlMapping', ...] = field(default_factory=tuple)
+
     def __post_init__(self):
         """Validate song structure."""
         if self.bpm <= 0:
@@ -594,6 +698,10 @@ class Song:
             "markers": [m.to_dict() for m in self.markers],
             "send_midi_clock": self.send_midi_clock,
             "receive_midi_clock": self.receive_midi_clock,
+            "loop_start_tick": self.loop_start_tick,
+            "loop_end_tick": self.loop_end_tick,
+            "loop_enabled": self.loop_enabled,
+            "midi_control_mappings": [m.to_dict() for m in self.midi_control_mappings],
         }
         # Add measure_metadata if present
         if self.measure_metadata:
@@ -615,6 +723,11 @@ class Song:
         # Parse markers
         markers = tuple(Marker.from_dict(m) for m in data.get("markers", []))
 
+        # Parse MIDI control mappings
+        midi_control_mappings = tuple(
+            MIDIControlMapping.from_dict(m) for m in data.get("midi_control_mappings", [])
+        )
+
         return cls(
             name=data.get("name", "Untitled"),
             bpm=float(data.get("bpm", 120.0)),
@@ -628,6 +741,10 @@ class Song:
             markers=markers,
             send_midi_clock=data.get("send_midi_clock", False),
             receive_midi_clock=data.get("receive_midi_clock", False),
+            loop_start_tick=data.get("loop_start_tick", 0),
+            loop_end_tick=data.get("loop_end_tick", None),
+            loop_enabled=data.get("loop_enabled", False),
+            midi_control_mappings=midi_control_mappings,
         )
 
 

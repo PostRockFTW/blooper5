@@ -21,9 +21,11 @@ from ui.widgets.MixerStrip import MixerStrip
 from ui.widgets.PianoRoll import PianoRoll
 from ui.widgets.NoteDrawToolbar import NoteDrawToolbar
 from plugins.sources.dual_osc import DualOscillator
-from plugins.base import ProcessContext
+from plugins.base import ProcessContext, ParameterType
+from plugins.registry import get_global_registry
 from core.models import Note, AppState
 from audio.scheduler import NoteScheduler
+from audio.voice_manager import VoiceManager
 from midi.handler import MIDIHandler
 
 
@@ -75,7 +77,11 @@ class DAWView:
         # Audio playback engine
         self.audio_stream = None
         self.sample_rate = 44100
-        self.dual_osc = DualOscillator()
+
+        # Per-track synth instances (no longer using single global dual_osc)
+        self.plugin_registry = get_global_registry()
+        self.track_synths = {}  # Cache: track_idx -> {'source_type': str, 'instance': AudioProcessor}
+
         self.playback_thread = None
         self.playback_lock = threading.Lock()
 
@@ -88,6 +94,9 @@ class DAWView:
         # Live MIDI input state
         # Key: (track_idx, note_number), Value: {'velocity': int, 'start_tick': int}
         self.active_live_notes = {}
+
+        # Voice manager for live MIDI rendering (prevents retriggering)
+        self.voice_manager = VoiceManager()
 
         # MIDI learn state
         self.midi_learn_active = False
@@ -223,9 +232,9 @@ class DAWView:
                 dpg.add_button(label="", width=4, height=-self.mixer_height-10, tag="vertical_splitter_btn",
                              callback=lambda: None)  # Drag handled by mouse handlers
 
-                # RIGHT PANEL: Sound Designer with Dual Oscillator
+                # RIGHT PANEL: Sound Designer with Dynamic Synth Selection
                 with dpg.child_window(width=-1, height=-self.mixer_height-10, border=False, tag="sound_designer_panel"):
-                    self._create_dual_oscillator_ui()
+                    self._create_sound_designer_ui()
 
             dpg.add_spacer(height=2)
 
@@ -620,150 +629,91 @@ class DAWView:
             self.dragging_mixer_splitter = True
             self.drag_start_pos = dpg.get_mouse_pos()
 
-    def _create_dual_oscillator_ui(self):
-        """Create dual oscillator synthesizer controls."""
+    def _create_sound_designer_ui(self):
+        """Create Sound Designer panel with dynamic synth selection."""
         dpg.add_spacer(height=20)
 
         # Header
         with dpg.group(horizontal=True):
             dpg.add_spacer(width=20)
-            dpg.add_text("DUAL OSCILLATOR SYNTH", color=(100, 150, 200, 255))
+            dpg.add_text("SOUND DESIGNER", color=(100, 150, 200, 255))
 
         dpg.add_spacer(height=15)
 
-        # Oscillator 1
+        # Synth Type Selector
         with dpg.group(horizontal=True):
             dpg.add_spacer(width=20)
-            dpg.add_text("Osc 1:", color=(200, 200, 200, 255))
-            dpg.add_combo(items=["SINE", "SQUARE", "SAW", "TRIANGLE", "NONE"],
-                         default_value="SAW",
-                         width=120,
-                         tag="osc1_type")
+            dpg.add_text("Synth Type:", color=(200, 200, 200, 255))
 
-        dpg.add_spacer(height=10)
-
-        # Oscillator 2
         with dpg.group(horizontal=True):
             dpg.add_spacer(width=20)
-            dpg.add_text("Osc 2:", color=(200, 200, 200, 255))
-            dpg.add_combo(items=["SINE", "SQUARE", "SAW", "TRIANGLE", "NONE"],
-                         default_value="SINE",
-                         width=120,
-                         tag="osc2_type")
-
-        dpg.add_spacer(height=10)
-
-        # Osc 2 Interval
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=20)
-            dpg.add_text("Interval:", color=(200, 200, 200, 255))
-            dpg.add_slider_int(default_value=0, min_value=-24, max_value=24,
-                             width=200, tag="osc2_interval")
-            dpg.add_text("st")
-
-        dpg.add_spacer(height=10)
-
-        # Osc 2 Detune
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=20)
-            dpg.add_text("Detune:", color=(200, 200, 200, 255))
-            dpg.add_slider_float(default_value=10.0, min_value=-50.0, max_value=50.0,
-                               width=200, tag="osc2_detune", format="%.1f")
-            dpg.add_text("cents")
-
-        dpg.add_spacer(height=10)
-
-        # Osc Mix
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=20)
-            dpg.add_text("Mix:", color=(200, 200, 200, 255))
-            dpg.add_slider_float(default_value=0.5, min_value=0.0, max_value=1.0,
-                               width=200, tag="osc_mix", format="%.2f")
+            # Will be populated from registry when track is selected
+            dpg.add_combo(
+                items=["DUAL_OSC"],
+                default_value="DUAL_OSC",
+                callback=self._on_synth_type_changed,
+                tag="synth_type_selector",
+                width=200
+            )
 
         dpg.add_spacer(height=15)
         dpg.add_separator()
         dpg.add_spacer(height=15)
 
-        # Filter
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=20)
-            dpg.add_text("Filter Cutoff:", color=(200, 200, 200, 255))
-            dpg.add_slider_float(default_value=5000.0, min_value=50.0, max_value=12000.0,
-                               width=200, tag="filter_cutoff", format="%.0f")
-            dpg.add_text("Hz")
-
-        dpg.add_spacer(height=15)
-        dpg.add_separator()
-        dpg.add_spacer(height=15)
-
-        # Envelope
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=20)
-            dpg.add_text("Attack:", color=(200, 200, 200, 255))
-            dpg.add_slider_float(default_value=0.01, min_value=0.001, max_value=2.0,
-                               width=200, tag="attack", format="%.3f")
-            dpg.add_text("s")
+        # Dynamic parameter container (child window for scrolling)
+        with dpg.child_window(tag="synth_params_container", height=-60, width=-1, border=False):
+            with dpg.group(horizontal=True):
+                dpg.add_spacer(width=20)
+                dpg.add_text("Select a track to edit synth parameters", color=(150, 150, 150, 255))
 
         dpg.add_spacer(height=10)
-
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=20)
-            dpg.add_text("Length:", color=(200, 200, 200, 255))
-            dpg.add_slider_float(default_value=0.5, min_value=0.01, max_value=5.0,
-                               width=200, tag="length", format="%.2f")
-            dpg.add_text("s")
-
-        dpg.add_spacer(height=10)
-
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=20)
-            dpg.add_text("Gain:", color=(200, 200, 200, 255))
-            dpg.add_slider_float(default_value=0.7, min_value=0.0, max_value=1.0,
-                               width=200, tag="gain", format="%.2f")
-
-        dpg.add_spacer(height=20)
 
         # Test Audio Button
         with dpg.group(horizontal=True):
             dpg.add_spacer(width=20)
-            dpg.add_button(label="Test Audio (Middle C)", callback=self._test_audio, width=200, height=40)
+            dpg.add_button(
+                label="Test Audio (Middle C)",
+                callback=self._test_audio,
+                width=200,
+                height=40,
+                tag="test_audio_button"
+            )
 
     def _test_audio(self):
-        """Test audio by playing middle C with current dual oscillator settings."""
+        """Test current track's synth with middle C."""
+        if self.current_track >= 16:
+            print("[TEST AUDIO] Master track has no synth")
+            return
+
         print("[TEST AUDIO] Playing middle C...")
 
         try:
-            # Get current UI parameter values
-            params = {
-                "osc1_type": dpg.get_value("osc1_type"),
-                "osc2_type": dpg.get_value("osc2_type"),
-                "osc2_interval": dpg.get_value("osc2_interval"),
-                "osc2_detune": dpg.get_value("osc2_detune"),
-                "osc_mix": dpg.get_value("osc_mix"),
-                "filter_cutoff": dpg.get_value("filter_cutoff"),
-                "attack": dpg.get_value("attack"),
-                "length": dpg.get_value("length"),
-                "gain": dpg.get_value("gain"),
-                "root_note": 60,  # Middle C
-                "transpose": 0
-            }
+            # Get current track's synth
+            track_synth = self._get_or_create_track_synth(self.current_track)
+            if not track_synth:
+                print("[TEST AUDIO] Failed to create synth")
+                return
+
+            song = self.app_state.get_current_song()
+            if not song:
+                print("[TEST AUDIO] No song loaded")
+                return
+
+            track = song.tracks[self.current_track]
 
             # Create a test note (middle C, velocity 100)
             test_note = Note(note=60, start=0.0, duration=1.0, velocity=100)
 
-            # Create dual oscillator instance
-            dual_osc = DualOscillator()
-
             # Create process context
             context = ProcessContext(
-                sample_rate=44100,
+                sample_rate=self.sample_rate,
                 bpm=120.0,
                 tpqn=480,
                 current_tick=0
             )
 
-            # Generate audio
-            audio_buffer = dual_osc.process(None, params, test_note, context)
+            # Generate audio using track's synth and parameters
+            audio_buffer = track_synth.process(None, track.source_params, test_note, context)
 
             # Normalize to prevent clipping
             max_val = np.max(np.abs(audio_buffer))
@@ -771,8 +721,8 @@ class DAWView:
                 audio_buffer = audio_buffer / max_val * 0.8
 
             # Play audio
-            print(f"[TEST AUDIO] Playing {len(audio_buffer)} samples...")
-            sd.play(audio_buffer, samplerate=44100)
+            print(f"[TEST AUDIO] Playing {len(audio_buffer)} samples with {track.source_type}...")
+            sd.play(audio_buffer, samplerate=self.sample_rate)
             sd.wait()
             print("[TEST AUDIO] Done!")
 
@@ -780,6 +730,198 @@ class DAWView:
             print(f"[TEST AUDIO ERROR] {e}")
             import traceback
             traceback.print_exc()
+
+    def _generate_synth_param_ui(self, track_idx: int):
+        """Generate UI widgets from plugin metadata for the selected track."""
+        song = self.app_state.get_current_song()
+        if not song or track_idx >= len(song.tracks):
+            return
+
+        track = song.tracks[track_idx]
+
+        # Get metadata from registry
+        try:
+            metadata = self.plugin_registry.get_plugin_metadata(track.source_type)
+        except Exception as e:
+            print(f"[UI ERROR] Failed to get metadata for {track.source_type}: {e}")
+            return
+
+        # Clear existing params
+        if dpg.does_item_exist("synth_params_container"):
+            dpg.delete_item("synth_params_container", children_only=True)
+
+        # Generate widgets from metadata
+        for param in metadata.parameters:
+            tag = f"synth_param_{param.name}"
+
+            # Delete old tag if it exists
+            if dpg.does_item_exist(tag):
+                dpg.delete_item(tag)
+
+            # Create horizontal group for label
+            label_group = dpg.add_group(horizontal=True, parent="synth_params_container")
+            dpg.add_spacer(width=20, parent=label_group)
+            dpg.add_text(f"{param.display_name}:", color=(200, 200, 200, 255), parent=label_group)
+
+            # Create horizontal group for widget
+            widget_group = dpg.add_group(horizontal=True, parent="synth_params_container")
+            dpg.add_spacer(width=20, parent=widget_group)
+
+            if param.type == ParameterType.FLOAT:
+                default_val = track.source_params.get(param.name, param.default)
+                widget_id = dpg.add_slider_float(
+                    min_value=param.min_val,
+                    max_value=param.max_val,
+                    default_value=default_val,
+                    callback=self._create_param_callback(track_idx, param.name),
+                    width=200,
+                    format="%.3f",
+                    parent=widget_group
+                )
+                dpg.set_item_alias(widget_id, tag)
+                # Add unit if available
+                if hasattr(param, 'unit') and param.unit:
+                    dpg.add_text(param.unit, color=(150, 150, 150, 255), parent=widget_group)
+
+            elif param.type == ParameterType.INT:
+                widget_id = dpg.add_slider_int(
+                    min_value=int(param.min_val),
+                    max_value=int(param.max_val),
+                    default_value=int(track.source_params.get(param.name, param.default)),
+                    callback=self._create_param_callback(track_idx, param.name),
+                    width=200,
+                    parent=widget_group
+                )
+                dpg.set_item_alias(widget_id, tag)
+                # Add unit if available
+                if hasattr(param, 'unit') and param.unit:
+                    dpg.add_text(param.unit, color=(150, 150, 150, 255), parent=widget_group)
+
+            elif param.type == ParameterType.BOOL:
+                widget_id = dpg.add_checkbox(
+                    default_value=track.source_params.get(param.name, param.default),
+                    callback=self._create_param_callback(track_idx, param.name),
+                    parent=widget_group
+                )
+                dpg.set_item_alias(widget_id, tag)
+
+            elif param.type == ParameterType.ENUM:
+                default_val = track.source_params.get(param.name, param.default)
+                widget_id = dpg.add_combo(
+                    items=param.enum_values,
+                    default_value=default_val,
+                    callback=self._create_param_callback(track_idx, param.name),
+                    width=200,
+                    parent=widget_group
+                )
+                dpg.set_item_alias(widget_id, tag)
+
+            # Add spacing between parameters
+            dpg.add_spacer(height=10, parent="synth_params_container")
+
+        print(f"[SYNTH UI] Generated {len(metadata.parameters)} parameters for {track.source_type}")
+
+    def _on_synth_param_changed(self, track_idx: int, param_name: str, value):
+        """Auto-save parameter change to track.source_params."""
+        song = self.app_state.get_current_song()
+        if not song or track_idx >= len(song.tracks):
+            return
+
+        track = song.tracks[track_idx]
+
+        # Update source_params (immutable, create new track)
+        new_params = track.source_params.copy()
+        new_params[param_name] = value
+
+        new_track = dataclasses.replace(track, source_params=new_params)
+        new_tracks = list(song.tracks)
+        new_tracks[track_idx] = new_track
+
+        new_song = dataclasses.replace(song, tracks=tuple(new_tracks))
+        self.app_state.set_current_song(new_song)
+        self.app_state.mark_dirty()
+
+        # Update current_song_id to match the new song object
+        self.current_song_id = id(new_song)
+
+        print(f"[SYNTH PARAM] Track {track_idx}: {param_name} = {value}")
+
+    def _create_param_callback(self, track_idx: int, param_name: str):
+        """Create a callback that captures track_idx and param_name correctly.
+
+        DearPyGUI callbacks receive (sender, value) arguments.
+        This wrapper captures track and parameter identifiers in the closure.
+        """
+        def callback(sender, value):
+            self._on_synth_param_changed(track_idx, param_name, value)
+        return callback
+
+    def _refresh_sound_designer_ui(self, track_idx: int, track):
+        """Refresh Sound Designer UI for selected track."""
+        # Update synth type selector
+        if dpg.does_item_exist("synth_type_selector"):
+            source_ids = list(self.plugin_registry.SOURCE_PLUGINS.keys())
+            dpg.configure_item("synth_type_selector", items=source_ids)
+            dpg.set_value("synth_type_selector", track.source_type)
+
+        # Regenerate parameter UI
+        self._generate_synth_param_ui(track_idx)
+
+        print(f"[SYNTH UI] Loaded {track.source_type} for Track {track_idx + 1}")
+
+    def _on_synth_type_changed(self, sender, new_synth_id):
+        """Handle synth type change for current track."""
+        if self.current_track >= 16:
+            return  # Master track doesn't have synth
+
+        song = self.app_state.get_current_song()
+        if not song:
+            return
+
+        track = song.tracks[self.current_track]
+
+        # Don't process if already the same
+        if track.source_type == new_synth_id:
+            return
+
+        # Get new synth metadata for parameter migration
+        try:
+            new_metadata = self.plugin_registry.get_plugin_metadata(new_synth_id)
+        except Exception as e:
+            print(f"[SYNTH ERROR] Failed to get metadata for {new_synth_id}: {e}")
+            return
+
+        # Migrate parameters (preserve common ones)
+        new_params = {}
+        for param_spec in new_metadata.parameters:
+            # Use old value if param name exists, else default
+            new_params[param_spec.name] = track.source_params.get(
+                param_spec.name,
+                param_spec.default
+            )
+
+        # Update track
+        new_track = dataclasses.replace(
+            track,
+            source_type=new_synth_id,
+            last_synth_source=track.source_type,
+            source_params=new_params
+        )
+
+        new_tracks = list(song.tracks)
+        new_tracks[self.current_track] = new_track
+        new_song = dataclasses.replace(song, tracks=tuple(new_tracks))
+
+        self.app_state.set_current_song(new_song)
+        self.app_state.mark_dirty()
+
+        # Clear cached synth for this track
+        self._clear_track_synth_cache(self.current_track)
+
+        # Refresh UI
+        self._refresh_sound_designer_ui(self.current_track, new_track)
+
+        print(f"[SYNTH CHANGE] Track {self.current_track + 1}: {track.source_type} -> {new_synth_id}")
 
     def _create_note_controls(self):
         """Create note drawing toolbar and bar edit toolbar."""
@@ -1505,6 +1647,10 @@ class DAWView:
                 self.midi_handler.send_stop()
 
             self._stop_playback()
+
+        # Clear all live MIDI voices
+        self.voice_manager.clear_all()
+
         self._update_time_display()
 
         # Reset playhead to start
@@ -2013,6 +2159,9 @@ class DAWView:
                 song=song
             )
 
+            # Load synth UI for selected track
+            self._refresh_sound_designer_ui(track_index, track)
+
         # Mark Piano Roll notes as belonging to this project (prevents cross-project pollution)
         self.current_song_id = id(song)
 
@@ -2035,6 +2184,8 @@ class DAWView:
         # Initialize MIDI handler for MIDI Learn (if not already done)
         if initial_load:
             self._ensure_midi_handler_initialized()
+            # Clear synth cache when loading new project
+            self._clear_track_synth_cache()
 
     def _on_mixer_value_change(self, channel_index: int, param_name: str, value):
         """
@@ -2146,12 +2297,33 @@ class DAWView:
                         'start_tick': current_tick
                     }
                     print(f"[MIDI IN] Ch {channel+1} | Note ON  {note} | Vel {velocity:3d} -> Track {track_idx}")
+
+                    # Create voice in voice manager
+                    track_synth = self._get_or_create_track_synth(track_idx)
+                    if track_synth:
+                        from plugins.base import ProcessContext
+                        context = ProcessContext(
+                            sample_rate=self.sample_rate,
+                            bpm=self.current_bpm,
+                            tpqn=480,
+                            current_tick=int(current_tick)
+                        )
+                        self.voice_manager.note_on(
+                            track_idx=track_idx,
+                            note_num=note,
+                            velocity=velocity,
+                            synth=track_synth,
+                            source_params=track.source_params,
+                            context=context
+                        )
                 else:
                     # Note Off (velocity 0)
                     key = (track_idx, note)
                     if key in self.active_live_notes:
                         del self.active_live_notes[key]
                         print(f"[MIDI IN] Ch {channel+1} | Note OFF {note} -> Track {track_idx}")
+                        # Trigger note_off in voice manager
+                        self.voice_manager.note_off(track_idx, note)
 
             elif event_type == 'note_off':
                 note = event['note']
@@ -2159,6 +2331,8 @@ class DAWView:
                 if key in self.active_live_notes:
                     del self.active_live_notes[key]
                     print(f"[MIDI IN] Ch {channel+1} | Note OFF {note} -> Track {track_idx}")
+                    # Trigger note_off in voice manager
+                    self.voice_manager.note_off(track_idx, note)
 
             elif event_type == 'channel_aftertouch':
                 # Channel aftertouch - could modulate synth parameters
@@ -2197,9 +2371,6 @@ class DAWView:
             scheduler.bpm = self.bpm  # Fallback BPM if no measure_metadata
             print(f"[PLAYBACK] Starting from tick {int(self.current_tick)}")
 
-            # Get synth parameters (these apply to all triggered notes)
-            synth_params = self._get_synth_params()
-
             # Active voices (currently playing notes)
             active_voices = []
 
@@ -2223,6 +2394,7 @@ class DAWView:
 
                         # Clear active voices to prevent audio bleeding
                         active_voices = []
+                        self.voice_manager.clear_all()
 
                 # Check for position jump requests from transport controls
                 try:
@@ -2282,6 +2454,7 @@ class DAWView:
 
                         # Clear active voices to prevent audio bleeding
                         active_voices = []
+                        self.voice_manager.clear_all()
 
                         # Send MIDI SPP on loop jump
                         if song.send_midi_clock and self.midi_handler and self.midi_handler.midi_out:
@@ -2337,17 +2510,23 @@ class DAWView:
                             should_trigger = True
 
                     if should_trigger:
-                        # Generate full audio for this note
-                        audio = self.dual_osc.process(None, synth_params, note, context)
+                        # Generate full audio for this note using track's synth instance
+                        track = song.tracks[track_idx]
+                        track_synth = self._get_or_create_track_synth(track_idx)
+                        if track_synth:
+                            audio = track_synth.process(None, track.source_params, note, context)
 
-                        triggered.append({
-                            'audio': audio,
-                            'position': 0,
-                            'note': note,
-                            'track_idx': track_idx,
-                            'volume': mixer_strip.volume,
-                            'pan': mixer_strip.pan
-                        })
+                            triggered.append({
+                                'audio': audio,
+                                'position': 0,
+                                'note': note,
+                                'track_idx': track_idx,
+                                'volume': mixer_strip.volume,
+                                'pan': mixer_strip.pan
+                            })
+                        else:
+                            # Skip if synth creation failed
+                            continue
 
                 active_voices.extend(triggered)
 
@@ -2355,53 +2534,17 @@ class DAWView:
                 output_left = np.zeros(frames, dtype=np.float32)
                 output_right = np.zeros(frames, dtype=np.float32)
 
-                # Render active live MIDI notes (from real-time input)
-                # Create temporary Note objects and generate audio chunks
-                for (track_idx, note_num), note_data in list(self.active_live_notes.items()):
-                    # Get track and mixer strip
-                    track = song.tracks[track_idx]
-                    mixer_strip = self.mixer_strips[track_idx]
+                # Render active live MIDI voices (from real-time input)
+                live_left, live_right = self.voice_manager.render_frame(
+                    frames=frames,
+                    song=song,
+                    mixer_strips=self.mixer_strips,
+                    any_solo_active=any_solo_active
+                )
 
-                    # Check mute/solo state
-                    if mixer_strip.muted:
-                        continue
-
-                    if any_solo_active and not mixer_strip.solo:
-                        continue
-
-                    # Create temporary Note object for synth (live notes don't have fixed duration)
-                    # We'll use a long duration and manually stop on note off
-                    live_note = Note(
-                        note=note_num,
-                        start=0,  # Not used for live notes
-                        duration=100.0,  # Very long duration (manually stopped on note off)
-                        velocity=note_data['velocity']
-                    )
-
-                    # Get synth parameters for this track
-                    track_synth_params = track.source_params.copy() if hasattr(track, 'source_params') else synth_params
-
-                    # Generate audio chunk for this frame only (streaming mode)
-                    # We'll generate exactly `frames` samples to fill this buffer
-                    live_audio = self.dual_osc.process(None, track_synth_params, live_note, context)
-
-                    # Only take the samples we need for this frame
-                    samples_to_use = min(len(live_audio), frames)
-                    audio_chunk = live_audio[:samples_to_use]
-
-                    # Apply volume and pan, then add directly to output buffers
-                    volume = mixer_strip.volume
-                    pan = mixer_strip.pan
-
-                    # Apply pan (0.0 = left, 0.5 = center, 1.0 = right)
-                    pan_angle = pan * (math.pi / 2)
-                    left_gain = math.cos(pan_angle)
-                    right_gain = math.sin(pan_angle)
-
-                    # Mix into output buffer
-                    if samples_to_use > 0:
-                        output_left[:samples_to_use] += audio_chunk * volume * left_gain
-                        output_right[:samples_to_use] += audio_chunk * volume * right_gain
+                # Mix live voices into output buffers
+                output_left[:] += live_left
+                output_right[:] += live_right
 
                 # Mix Piano Roll voices into output buffer (stereo)
                 # (output buffers already initialized above with live notes mixed in)
@@ -2496,8 +2639,59 @@ class DAWView:
             traceback.print_exc()
             self.is_playing = False
 
+    def _get_or_create_track_synth(self, track_idx: int):
+        """Get or create synth instance for track."""
+        song = self.app_state.get_current_song()
+        if not song or track_idx >= len(song.tracks):
+            return None
+
+        track = song.tracks[track_idx]
+
+        # Check cache and validate source_type matches
+        if track_idx in self.track_synths:
+            cached = self.track_synths[track_idx]
+            if cached['source_type'] == track.source_type:
+                return cached['instance']
+            else:
+                # Source type changed, reset old instance
+                cached['instance'].reset()
+
+        # Create new instance from registry
+        try:
+            synth = self.plugin_registry.create_instance(track.source_type)
+            self.track_synths[track_idx] = {
+                'source_type': track.source_type,
+                'instance': synth
+            }
+            return synth
+        except Exception as e:
+            print(f"[SYNTH ERROR] Failed to create {track.source_type}: {e}")
+            # Fallback to DUAL_OSC
+            synth = self.plugin_registry.create_instance("DUAL_OSC")
+            self.track_synths[track_idx] = {
+                'source_type': "DUAL_OSC",
+                'instance': synth
+            }
+            return synth
+
+    def _clear_track_synth_cache(self, track_idx=None):
+        """Clear synth cache (all or specific track)."""
+        if track_idx is not None:
+            if track_idx in self.track_synths:
+                self.track_synths[track_idx]['instance'].reset()
+                del self.track_synths[track_idx]
+        else:
+            for cached in self.track_synths.values():
+                cached['instance'].reset()
+            self.track_synths.clear()
+
     def _get_synth_params(self):
-        """Get current synthesizer parameters from UI."""
+        """
+        DEPRECATED: Use track.source_params directly.
+
+        This method reads global UI state and is no longer used.
+        Kept for backward compatibility only.
+        """
         params = {}
 
         # Try to get values from UI, use defaults if widgets don't exist

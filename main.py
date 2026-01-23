@@ -10,6 +10,7 @@ from ui.views.SettingsPage import SettingsPage
 from ui.views.DAWView import DAWView
 from core.models import Song, Track, AppState, Note
 from core.persistence import ProjectFile
+from plugins.registry import initialize_registry
 
 
 # Module-level variables (accessed by callbacks)
@@ -34,6 +35,10 @@ def main():
 
     # Create app state
     app_state = AppState()
+
+    # Initialize plugin registry
+    print("Initializing plugin registry...")
+    initialize_registry()
 
     # Create settings page first (it loads settings)
     settings_page = SettingsPage(on_close=on_settings_close)

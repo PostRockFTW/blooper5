@@ -49,7 +49,14 @@
       "Bash(git branch:*)",
       "mcp__ide__getDiagnostics",
       "Bash(taskkill:*)",
-      "Bash(ping:*)"
+      "Bash(ping:*)",
+      "WebFetch(domain:www.manualslib.com)",
+      "WebFetch(domain:www.strumentimusicali.net)",
+      "Bash(tasklist:*)",
+      "Bash(findstr:*)",
+      "Bash(wmic process:*)",
+      "WebFetch(domain:www.youtube.com)",
+      "Bash(exit 0)"
     ]
   }
 }

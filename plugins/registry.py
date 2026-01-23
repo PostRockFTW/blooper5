@@ -30,6 +30,7 @@ class PluginRegistry:
         "FM_DRUM": "plugins.sources.fm_drum",
         "SQUARE_CYMBAL": "plugins.sources.square_cymbal",
         "PERIODIC_NOISE": "plugins.sources.periodic_noise",
+        "ZION_CYMBAL": "plugins.sources.zion_cymbal",
     }
 
     EFFECT_PLUGINS = {

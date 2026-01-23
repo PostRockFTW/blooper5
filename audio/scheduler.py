@@ -17,16 +17,17 @@ class NoteScheduler:
     Supports per-measure tempo changes via MeasureMetadata.
     """
 
-    def __init__(self, sample_rate=44100, measure_metadata=None):
+    def __init__(self, sample_rate=44100, measure_metadata=None, initial_tick=0.0):
         """
-        Initialize scheduler.
+        Initialize scheduler with optional starting position.
 
         Args:
             sample_rate: Audio sample rate in Hz
             measure_metadata: Optional tuple of MeasureMetadata for per-measure tempo
+            initial_tick: Starting tick position (default: 0.0)
         """
         self.sample_rate = sample_rate
-        self.current_tick = 0.0
+        self.current_tick = initial_tick
         self.elapsed_time = 0.0  # Actual elapsed time in seconds
         self.bpm = 120.0  # Default/fallback BPM
         self.tpqn = 480  # Ticks per quarter note

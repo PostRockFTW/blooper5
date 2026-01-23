@@ -25,6 +25,8 @@ class LandingPage:
     def __init__(self,
                  on_new_project: Callable,
                  on_open_project: Callable,
+                 on_import_midi: Optional[Callable] = None,
+                 on_export_midi: Optional[Callable] = None,
                  on_return_to_project: Optional[Callable] = None,
                  on_save_project: Optional[Callable] = None,
                  on_save_as_project: Optional[Callable] = None,
@@ -34,6 +36,8 @@ class LandingPage:
         Args:
             on_new_project: Callback when "New Project" clicked
             on_open_project: Callback when "Open Project" clicked (receives file_path)
+            on_import_midi: Callback when "Import MIDI" clicked (receives file_path)
+            on_export_midi: Callback when "Export MIDI" clicked (receives file_path)
             on_return_to_project: Callback when "Return to Project" clicked (optional)
             on_save_project: Callback when "Save Project" clicked (optional)
             on_save_as_project: Callback when "Save As" clicked (optional)
@@ -42,6 +46,8 @@ class LandingPage:
         """
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
+        self.on_import_midi = on_import_midi
+        self.on_export_midi = on_export_midi
         self.on_return_to_project = on_return_to_project
         self.on_save_project = on_save_project
         self.on_save_as_project = on_save_as_project
@@ -175,6 +181,28 @@ class LandingPage:
                             width=280,
                             height=50,
                             callback=self._show_file_dialog
+                        )
+
+                        dpg.add_spacer(height=15)
+
+                        # Import MIDI button
+                        dpg.add_button(
+                            label="Import MIDI File",
+                            width=280,
+                            height=50,
+                            callback=self._show_import_midi_dialog
+                        )
+
+                        dpg.add_spacer(height=15)
+
+                        # Export MIDI button (shown only when project active)
+                        dpg.add_button(
+                            label="Export MIDI File",
+                            width=280,
+                            height=50,
+                            callback=self._show_export_midi_dialog,
+                            tag="export_midi_btn",
+                            show=self.has_active_project
                         )
 
                         dpg.add_spacer(height=15)
@@ -328,6 +356,53 @@ class LandingPage:
         print(f"Opening project: {file_path}")
         # Note: add_recent_project is called by on_open_project in main.py
         self.on_open_project(file_path)
+
+    def _show_import_midi_dialog(self):
+        """Show file dialog for MIDI import."""
+        if not dpg.does_item_exist("import_midi_dialog"):
+            with dpg.file_dialog(
+                directory_selector=False,
+                show=False,
+                callback=self._handle_import_midi,
+                tag="import_midi_dialog",
+                width=700,
+                height=400,
+                default_path=str(Path.home() / "Documents")
+            ):
+                dpg.add_file_extension(".mid", color=(0, 255, 122, 255))
+                dpg.add_file_extension(".midi", color=(0, 255, 122, 255))
+                dpg.add_file_extension(".*")
+        dpg.show_item("import_midi_dialog")
+
+    def _handle_import_midi(self, sender, app_data):
+        """Handle MIDI import file selection."""
+        if app_data['selections']:
+            file_path = list(app_data['selections'].values())[0]
+            if self.on_import_midi:
+                self.on_import_midi(file_path)
+
+    def _show_export_midi_dialog(self):
+        """Show file dialog for MIDI export."""
+        if not dpg.does_item_exist("export_midi_dialog"):
+            with dpg.file_dialog(
+                directory_selector=False,
+                show=False,
+                callback=self._handle_export_midi,
+                tag="export_midi_dialog",
+                width=700,
+                height=400,
+                default_path=str(Path.home() / "Documents")
+            ):
+                dpg.add_file_extension(".mid", color=(122, 122, 255, 255))
+                dpg.add_file_extension(".*")
+        dpg.show_item("export_midi_dialog")
+
+    def _handle_export_midi(self, sender, app_data):
+        """Handle MIDI export file selection."""
+        if app_data['selections']:
+            file_path = list(app_data['selections'].values())[0]
+            if self.on_export_midi:
+                self.on_export_midi(file_path)
 
     def show(self):
         """Show the landing page window."""

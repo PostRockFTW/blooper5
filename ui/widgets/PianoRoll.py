@@ -49,10 +49,12 @@ class PianoRoll:
     """Piano Roll editor with improved UX based on user feedback."""
 
     def __init__(self, width: int = 1000, height: int = 600, on_notes_changed: Optional[Callable] = None,
+                 on_loop_markers_changed: Optional[Callable] = None,
                  song: Optional[Song] = None):
         self.width = width
         self.height = height
         self.on_notes_changed = on_notes_changed  # Callback for undo/redo snapshots
+        self.on_loop_markers_changed = on_loop_markers_changed  # Callback for loop marker changes
         self.song = song  # Song reference for accessing time signature and measure metadata
 
         # Theme (customizable)
@@ -103,6 +105,12 @@ class PianoRoll:
 
         # Playback
         self.current_tick = 0
+
+        # Loop marker state
+        self.loop_start_tick = 0
+        self.loop_end_tick = None
+        self.dragging_loop_marker = None  # "start", "end", or None
+        self.loop_marker_drag_start_tick = None
 
         # Mock song data
         self.song_length_ticks = TPQN * 4 * 1  # 1 bar (4 beats)
@@ -472,6 +480,7 @@ class PianoRoll:
         self._draw_bar_selection_highlight()  # Draw bar selection highlight
         self._draw_ghost_note()
         self._draw_playhead()
+        self._draw_loop_markers()  # Draw loop markers after playhead
 
     def _draw_background_grid(self):
         """Draw alternating row backgrounds."""
@@ -898,20 +907,113 @@ class PianoRoll:
                     tag=playhead_tag
                 )
 
+    def _draw_loop_markers(self):
+        """Draw loop start/end markers with draggable dots at top."""
+        DOT_RADIUS = 6
+        DOT_Y = 10  # Fixed Y (stays at top regardless of vertical scroll)
+
+        # Loop Start (green)
+        if self.loop_start_tick is not None:
+            px, _ = self.get_coords(self.loop_start_tick, 0)
+            if 0 <= px <= self.width:
+                # Vertical line
+                dpg.draw_line(
+                    (px, 0), (px, self.height),
+                    color=(80, 255, 80, 255),  # Green
+                    thickness=2,
+                    parent=self.drawlist_id
+                )
+                # Draggable dot
+                dpg.draw_circle(
+                    (px, DOT_Y), DOT_RADIUS,
+                    fill=(80, 255, 80, 255),
+                    color=(60, 200, 60, 255),  # Darker border
+                    thickness=1,
+                    parent=self.drawlist_id
+                )
+                # Label
+                dpg.draw_text(
+                    (px - 15, DOT_Y + 12), "START",
+                    color=(255, 255, 255, 255),
+                    size=10,
+                    parent=self.drawlist_id
+                )
+
+        # Loop End (blue)
+        if self.loop_end_tick is not None:
+            px, _ = self.get_coords(self.loop_end_tick, 0)
+            if 0 <= px <= self.width:
+                # Vertical line
+                dpg.draw_line(
+                    (px, 0), (px, self.height),
+                    color=(80, 180, 255, 255),  # Blue
+                    thickness=2,
+                    parent=self.drawlist_id
+                )
+                # Draggable dot
+                dpg.draw_circle(
+                    (px, DOT_Y), DOT_RADIUS,
+                    fill=(80, 180, 255, 255),
+                    color=(60, 140, 200, 255),  # Darker border
+                    thickness=1,
+                    parent=self.drawlist_id
+                )
+                # Label
+                dpg.draw_text(
+                    (px - 10, DOT_Y + 12), "END",
+                    color=(255, 255, 255, 255),
+                    size=10,
+                    parent=self.drawlist_id
+                )
+
+    def _check_loop_marker_hit(self, mouse_x: float, mouse_y: float) -> Optional[str]:
+        """
+        Check if mouse is over a loop marker dot.
+        Returns: "start", "end", or None
+        """
+        DOT_Y = 10
+        HIT_TOLERANCE = 10  # Larger hit area for easier clicking
+
+        # Check if Y is near the dot area (top edge only)
+        if not (0 <= mouse_y <= DOT_Y + HIT_TOLERANCE):
+            return None
+
+        # Check Loop Start
+        if self.loop_start_tick is not None:
+            px, _ = self.get_coords(self.loop_start_tick, 0)
+            if abs(mouse_x - px) <= HIT_TOLERANCE:
+                return "start"
+
+        # Check Loop End
+        if self.loop_end_tick is not None:
+            px, _ = self.get_coords(self.loop_end_tick, 0)
+            if abs(mouse_x - px) <= HIT_TOLERANCE:
+                return "end"
+
+        return None
+
     def _handle_canvas_click(self, sender, app_data):
         """Route left-click to appropriate handler based on current tool."""
-        # Check for bar selection mode first (takes priority over other tools)
-        if self.bar_selection_mode:
-            # Get mouse position
-            mouse_pos = dpg.get_mouse_pos(local=False)
-            canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
-            mouse_x = mouse_pos[0] - canvas_rect_min[0]
-            mouse_y = mouse_pos[1] - canvas_rect_min[1]
+        # Get mouse position
+        mouse_pos = dpg.get_mouse_pos(local=False)
+        canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
+        mouse_x = mouse_pos[0] - canvas_rect_min[0]
+        mouse_y = mouse_pos[1] - canvas_rect_min[1]
 
+        # Priority 1: Loop marker dragging (highest priority)
+        hit_marker = self._check_loop_marker_hit(mouse_x, mouse_y)
+        if hit_marker:
+            self.dragging_loop_marker = hit_marker
+            tick = self.get_tick_at(mouse_x)
+            self.loop_marker_drag_start_tick = tick
+            return
+
+        # Priority 2: Bar selection mode
+        if self.bar_selection_mode:
             self._handle_bar_selection_click(mouse_x, mouse_y)
             return
 
-        # Normal tool routing
+        # Priority 3: Normal tool routing
         if self.tool == "draw":
             self._handle_draw_click(sender, app_data)
         elif self.tool == "erase":
@@ -1025,6 +1127,35 @@ class PianoRoll:
 
     def _handle_mouse_move(self, sender, app_data):
         """Handle mouse move - update drawing or erasing drag if active."""
+        # Handle loop marker dragging
+        if self.dragging_loop_marker:
+            if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
+                self._finish_loop_marker_drag()
+                return
+
+            mouse_pos = dpg.get_mouse_pos(local=False)
+            canvas_rect_min = dpg.get_item_rect_min(self.canvas_id)
+            mouse_x = mouse_pos[0] - canvas_rect_min[0]
+
+            current_tick = self.get_tick_at(mouse_x)
+
+            # Apply snapping if enabled
+            snapped_tick = self.snap_to_grid(current_tick) if self.snap_enabled else current_tick
+
+            # Update marker with constraints
+            if self.dragging_loop_marker == "start":
+                # Constrain: start must be before end (if end is set)
+                if self.loop_end_tick is not None:
+                    snapped_tick = min(snapped_tick, self.loop_end_tick - self.grid_snap)
+                self.loop_start_tick = max(0, int(snapped_tick))
+            elif self.dragging_loop_marker == "end":
+                # Constrain: end must be after start
+                snapped_tick = max(snapped_tick, self.loop_start_tick + self.grid_snap)
+                self.loop_end_tick = int(snapped_tick)
+
+            self.draw()
+            return
+
         if self.is_drawing_drag:
             # Check if left mouse button is still held
             if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
@@ -1169,6 +1300,17 @@ class PianoRoll:
 
         self.draw()
 
+    def _finish_loop_marker_drag(self):
+        """Finalize loop marker drag and notify DAWView."""
+        self.dragging_loop_marker = None
+        self.loop_marker_drag_start_tick = None
+
+        # Notify DAWView to save loop markers to song
+        if hasattr(self, 'on_loop_markers_changed') and self.on_loop_markers_changed:
+            self.on_loop_markers_changed(self.loop_start_tick, self.loop_end_tick)
+
+        self.draw()
+
     def _erase_note_at_position(self, mouse_x: float, mouse_y: float):
         """Erase note at given mouse position (if exists)."""
         # Convert to musical coordinates
@@ -1209,7 +1351,9 @@ class PianoRoll:
 
     def _handle_mouse_release(self, sender, app_data):
         """Handle mouse release - finish any active drag."""
-        if self.is_drawing_drag:
+        if self.dragging_loop_marker:
+            self._finish_loop_marker_drag()
+        elif self.is_drawing_drag:
             self._finish_drawing_drag()
         elif self.is_erasing_drag:
             self._finish_erasing_drag()
